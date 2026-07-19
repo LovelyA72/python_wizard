@@ -27,12 +27,19 @@ Compared to BlueWizard some minor features have been added:
 2. Automated output formatters for C, Arduino (C-Dialect) and plain hex
 
 Prerequisites:
-- Python 2.7
-- SciPy >= 0.18.1
+- Python >= 3.13
+- NumPy >= 2.1
+- SciPy >= 1.14.1
+
+Install the project and its command-line tools with:
+
+```
+python -m pip install .
+```
 
 Usage: 
 ```
-       python_wizard.py [-h] [-u UNVOICEDTHRESHOLD] [-w WINDOWWIDTH] [-U] [-V]
+       python_wizard [-h] [-u UNVOICEDTHRESHOLD] [-w WINDOWWIDTH] [-U] [-V]
                         [-S] [-p] [-a PREEMPHASISALPHA] [-d] [-r PITCHRANGE]
                         [-F FRAMERATE] [-m SUBMULTIPLETHRESHOLD]
                         [-f {arduino,C,hex}]

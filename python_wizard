@@ -78,7 +78,7 @@ from pywizard.Buffer import Buffer
 #settings.import_from_argparse(args)
 from pywizard.CodingTable import CodingTable
 
-b = Buffer.fromWave(args.filename)
+b=Buffer.fromWave(args.filename)
 if b is None:
     sys.exit()
 

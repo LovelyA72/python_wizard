@@ -1,5 +1,4 @@
-from distutils.core import setup
-import setuptools
+from setuptools import setup
 
 setup(
     name = "pywizard",
@@ -9,8 +8,10 @@ setup(
     author = 'Peter Turczak (python port), Patrick J. Collins (original code and most of the work), Special thanks to: Richard Wiggins Jonathan Gevaryahu Gene Frantz Frank Palazzolo',
     license = 'MIT',
     packages = ["pywizard", "lpcplayer"],
-    install_requires=['scipy'],
-    extras_require = {"gui": ["pyaudio"]},
-    python_requires = '>=3.5',
+    install_requires=[
+        'numpy>=2.1',
+        'scipy>=1.14.1',
+    ],
+    python_requires = '>=3.13',
     scripts = ['python_wizard', 'python_wizard_gui']
 )

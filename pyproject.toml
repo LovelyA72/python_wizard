@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pywizard"
+version = "1.4.3"
+description = "Convert WAV files to LPC byte streams for TMS52xx speech chips"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+authors = [
+  {name = "Peter Turczak and contributors"},
+]
+dependencies = [
+  "numpy>=2.1",
+  "scipy>=1.14.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/ptwz/python_wizard"
+
+[tool.setuptools]
+packages = ["pywizard", "lpcplayer"]
+script-files = ["python_wizard", "python_wizard_gui"]
