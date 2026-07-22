@@ -3,6 +3,7 @@ from tkinter import *
 from tkinter import filedialog, messagebox
 import logging
 import math
+import os
 import queue
 import threading
 from collections import OrderedDict
@@ -55,8 +56,35 @@ class Gui(object):
         self.filename = filedialog.askopenfilename(parent=self.master,filetypes=[('Waves',"*.wav")])
         if self.filename:
             self.processor = None
+            self.frames = []
             self.play_button.configure(state=DISABLED)
             self.run = True
+
+    def _file_export_lpc(self):
+        if self.processor is None:
+            messagebox.showinfo("Nothing to export", "Open a WAV file and convert it first.")
+            return
+
+        basename = os.path.splitext(os.path.basename(self.filename))[0] + ".lpc"
+        filename = filedialog.asksaveasfilename(
+            parent=self.master,
+            title="Export LPC",
+            defaultextension=".lpc",
+            initialdir=os.path.dirname(self.filename),
+            initialfile=basename,
+            filetypes=[("LPC byte stream", "*.lpc"), ("All files", "*.*")],
+        )
+        if not filename:
+            return
+
+        try:
+            byte_count = BitPacker.write_lpc(self.processor, filename)
+        except OSError as error:
+            messagebox.showerror("Export failed", str(error))
+            self.statusbar['text'] = "LPC export failed"
+            return
+
+        self.statusbar['text'] = "Exported {} LPC bytes to {}".format(byte_count, filename)
 
 
     def _make_menus(self):
@@ -67,6 +95,8 @@ class Gui(object):
         menubar.add_cascade(menu=menu_file, label="File")
 
         menu_file.add_command(label="Open WAV", command=self._file_open)
+        menu_file.add_command(label="Export LPC...", command=self._file_export_lpc)
+        menu_file.add_separator()
         menu_file.add_command(label="Quit", command=self.quit)
         
         # menu_play = Menu(menubar)
@@ -93,7 +123,7 @@ class Gui(object):
         self.raw_settings = raw_settings
         row = 1
         col = 1
-        rows = 6
+        rows = 7
         var = {}
         for key in raw_settings:
             Label(settings_frame, text=key).grid(row=row,column=col)
@@ -213,6 +243,12 @@ class Gui(object):
             errors["maximumPitchInHZ"] = "must exceed minimumPitchInHZ"
         if not 0 <= values["subMultipleThreshold"] <= 1:
             errors["subMultipleThreshold"] = "must be between 0 and 1"
+        if values["pitchDetector"] not in ("autocorrelation", "yin"):
+            errors["pitchDetector"] = "must be autocorrelation or yin"
+        if not 0 < values["yinThreshold"] < 1:
+            errors["yinThreshold"] = "must be between 0 and 1"
+        if values["lpcEstimator"] not in ("autocorrelation", "burg"):
+            errors["lpcEstimator"] = "must be autocorrelation or burg"
         if not 0 <= values["rmsLimit"] <= 14:
             errors["rmsLimit"] = "must be between 0 and 14"
         if values["outputFormat"] not in ("arduino", "C", "hex", "python"):
@@ -373,7 +409,8 @@ class Gui(object):
     def _repeatedly(self):
         self.root.after(500, self._repeatedly)
         self._handle_playback_events()
-        self._readback_table()
+        if self.processor is not None:
+            self._readback_table()
         if self.run:
             self.run = False
             self.play_button.configure(state=DISABLED)
@@ -392,6 +429,7 @@ class Gui(object):
                 self.statusbar['text'] = "Processing complete"
             except Exception as error:
                 self.processor = None
+                self.frames = []
                 self.statusbar['text'] = "Processing failed"
                 messagebox.showerror("Processing failed", str(error))
             finally:

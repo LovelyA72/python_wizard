@@ -13,6 +13,10 @@
     -f {arduino,C,hex,python}, --outputFormat {arduino,C,hex,python}
                           Output file format
   ```
+- Export raw, headerless `.lpc` byte streams from both the CLI and GUI. LPC
+  exports always include an explicit stop frame and are directly compatible
+  with Talkie and the FM720 Z80 file player.
+
 - Small fixes and enhancements in GUI
 
 
@@ -37,12 +41,45 @@ Install the project and its command-line tools with:
 python -m pip install .
 ```
 
+### Pitch detector plugins
+
+`Processor` uses the existing autocorrelation detector by default. The native
+NumPy YIN detector can be selected from the command line with
+`--pitchDetector yin`; its trough threshold defaults to `0.1` and can be set
+with `--yinThreshold`. A different algorithm can also be supplied without
+changing the processing pipeline by implementing `PitchDetector.detect()` and
+passing the detector to `Processor`:
+
+```python
+from pywizard.PitchDetector import PitchDetector
+from pywizard.Processor import Processor
+
+
+class MyPitchDetector(PitchDetector):
+    def detect(self, buf):
+        # Return the fundamental period in samples, or 0.0 if none is found.
+        return period
+
+
+processor = Processor(audio_buffer, pitch_detector=MyPitchDetector())
+```
+
+### LPC estimator plugins
+
+Autocorrelation LPC remains the default. Native NumPy Burg LPC can be selected
+with `--lpcEstimator burg`. LPC estimators implement `LpcEstimator.estimate()`
+and return reflection coefficients plus residual energy, and custom estimators
+can be passed to `Processor` with its `lpc_estimator` argument.
+
 Usage: 
 ```
        python_wizard [-h] [-u UNVOICEDTHRESHOLD] [-w WINDOWWIDTH] [-U] [-V]
                         [-S] [-p] [-a PREEMPHASISALPHA] [-d] [-r PITCHRANGE]
                         [-F FRAMERATE] [-m SUBMULTIPLETHRESHOLD]
-                        [-f {arduino,C,hex}]
+                        [--pitchDetector {autocorrelation,yin}]
+                        [--yinThreshold YINTHRESHOLD]
+                        [--lpcEstimator {autocorrelation,burg}]
+                        [-f {arduino,C,hex,python,lpc}] [-o OUTPUT]
                         filename
 
 positional arguments:
@@ -69,8 +106,25 @@ optional arguments:
                         Default: 50,500
   -F FRAMERATE, --frameRate FRAMERATE
   -m SUBMULTIPLETHRESHOLD, --subMultipleThreshold SUBMULTIPLETHRESHOLD
-                        sub-multiple threshold
-  -f {arduino,C,hex}, --outputFormat {arduino,C,hex}
+                        Autocorrelation sub-multiple threshold
+  --pitchDetector {autocorrelation,yin}
+                        Pitch detection algorithm
+  --yinThreshold YINTHRESHOLD
+                        YIN trough threshold
+  --lpcEstimator {autocorrelation,burg}
+                        LPC coefficient estimation algorithm
+  -f {arduino,C,hex,python,lpc}, --outputFormat {arduino,C,hex,python,lpc}
                         Output file format
+  -o OUTPUT, --output OUTPUT
+                        Write output to this file
 ```
+
+Export a binary LPC file with an explicit stop frame:
+
+```text
+python_wizard -f lpc -o SPEECH.LPC speech.wav
+```
+
+If `-o` is omitted for LPC output, the input name is reused with a `.lpc`
+extension. In the GUI, process a WAV file and select **File > Export LPC...**.
 

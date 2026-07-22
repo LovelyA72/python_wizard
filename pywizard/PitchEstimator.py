@@ -4,12 +4,31 @@ import numpy as np
 
 class PitchEstimator(object):
     @classmethod
-    def pitchForPeriod(cls, buf):
-        return cls(buf).estimate()
+    def pitchForPeriod(cls, buf, minimum_pitch_hz=None, maximum_pitch_hz=None,
+                       sub_multiple_threshold=None):
+        return cls(
+            buf,
+            minimum_pitch_hz=minimum_pitch_hz,
+            maximum_pitch_hz=maximum_pitch_hz,
+            sub_multiple_threshold=sub_multiple_threshold,
+        ).estimate()
 
-    def __init__(self, buf):
+    def __init__(self, buf, minimum_pitch_hz=None, maximum_pitch_hz=None,
+                 sub_multiple_threshold=None):
         self._bestPeriod = None
         self.buf = buf
+        self.minimum_pitch_hz = (
+            settings.minimumPitchInHZ
+            if minimum_pitch_hz is None else minimum_pitch_hz
+        )
+        self.maximum_pitch_hz = (
+            settings.maximumPitchInHZ
+            if maximum_pitch_hz is None else maximum_pitch_hz
+        )
+        self.sub_multiple_threshold = (
+            settings.subMultipleThreshold
+            if sub_multiple_threshold is None else sub_multiple_threshold
+        )
         self._normalizedCoefficients = self.getNormalizedCoefficients()
 
     def isOutOfRange(self):
@@ -47,7 +66,7 @@ class PitchEstimator(object):
                     curr = self._normalizedCoefficients[subMultiplePeriod]
                 except IndexError:
                     curr = None
-                if (curr is not None) and ( curr < settings.subMultipleThreshold * self._normalizedCoefficients[bestPeriod]):
+                if (curr is not None) and (curr < self.sub_multiple_threshold * self._normalizedCoefficients[bestPeriod]):
                     subMultiplesAreStrong = False
             if subMultiplesAreStrong:
                 estimate /= maximumMultiple
@@ -78,16 +97,16 @@ class PitchEstimator(object):
         return self._bestPeriod
 
     def maxPitchInHZ(self):
-        return settings.maximumPitchInHZ
+        return self.maximum_pitch_hz
 
     def minPitchInHZ(self):
-        return settings.minimumPitchInHZ
+        return self.minimum_pitch_hz
 
     def minimumPeriod(self):
-        return int(np.floor(self.buf.sampleRate / settings.maximumPitchInHZ - 1))
+        return int(np.floor(self.buf.sampleRate / self.maximum_pitch_hz - 1))
 
     def maximumPeriod(self):
-        return int(np.floor(self.buf.sampleRate / settings.minimumPitchInHZ + 1))
+        return int(np.floor(self.buf.sampleRate / self.minimum_pitch_hz + 1))
 
 
 def ClosestValueFinder(actual, table):

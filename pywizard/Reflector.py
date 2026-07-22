@@ -43,37 +43,28 @@ class Reflector(object):
         return np.sqrt(rms / numberOfSamples) * (1 << 15)
 
     @classmethod
+    def fromLpcEstimate(cls, codingTable, estimate, numberOfSamples):
+        rms = cls.formattedRMS(estimate.residual_energy, numberOfSamples)
+        return cls(
+            codingTable,
+            k=list(estimate.reflection_coefficients),
+            rms=rms,
+            limitRMS=True,
+        )
+
+    @classmethod
     def translateCoefficients(cls, codingTable, r, numberOfSamples):
-        '''Leroux Guegen algorithm for finding K's'''
+        """Translate autocorrelation coefficients through the legacy API."""
+        from pywizard.LpcEstimator import AutocorrelationLpcEstimator
 
-        k = [0.0] * 11;
-        b = [0.0] * 11;
-        d = [0.0] * 12;
-
-        k[1] = -r[1] / r[0]
-        d[1] = r[1]
-        d[2] = r[0] + (k[1] * r[1])
-
-        for i in range(2, 11):
-            y = r[i]
-            b[1] = y
-
-            for j in range(1, i):
-                b[j + 1] = d[j] + (k[j] * y)
-                y = y + (k[j] * d[j])
-                d[j] = b[j]
-
-            k[i] = -y / d[i]
-            d[i + 1] = d[i] + (k[i] * y)
-            d[i] = b[i]
-        rms = cls.formattedRMS( d[11], numberOfSamples )
-        return cls(codingTable, k=k, rms=rms, limitRMS=True )
+        estimate = AutocorrelationLpcEstimator().estimate_from_autocorrelation(r)
+        return cls.fromLpcEstimate(codingTable, estimate, numberOfSamples)
 
 
     @property
     def rms(self):
         if self.limitRMS and self._rms >= self.codingTable.rms[self.codingTable.kStopFrameIndex - 1]:
-            return self.codingTable.rms[CodingTable.kStopFrameIndex - 1]
+            return self.codingTable.rms[self.codingTable.kStopFrameIndex - 1]
         else:
             return self._rms
 

@@ -6,7 +6,8 @@ class userSettings(object):
         "normalizeUnvoicedRMS", "normalizeUnvoicedRMS", "includeExplicitStopFrame",
         "preEmphasis", "preEmphasisAlpha", "overridePitch", "pitchOffset",
         "minimumPitchInHZ", "maximumPitchInHZ", "frameRate",
-        "subMultipleThreshold", "outputFormat", "rmsLimit", "tablesVariant"]
+        "pitchDetector", "subMultipleThreshold", "yinThreshold",
+        "lpcEstimator", "outputFormat", "rmsLimit", "tablesVariant"]
     pitchValue = 0
     unvoicedThreshold = 0.3
     windowWidth = 2
@@ -20,7 +21,10 @@ class userSettings(object):
     maximumPitchInHZ = 500
     minimumPitchInHZ = 50
     frameRate = 25
+    pitchDetector = "autocorrelation"
     subMultipleThreshold = 0.9
+    yinThreshold = 0.1
+    lpcEstimator = "autocorrelation"
     outputFormat = "arduino"
     rmsLimit = 14
     tablesVariant = "tms5100"

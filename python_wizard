@@ -48,13 +48,27 @@ parser.add_argument("-F", "--frameRate",
     default=25,
     type=int)
 parser.add_argument("-m", "--subMultipleThreshold",
-    help="sub-multiple threshold",
+    help="Autocorrelation sub-multiple threshold",
     default=0.9,
     type=float)
+parser.add_argument("--pitchDetector",
+    help="Pitch detection algorithm",
+    choices=["autocorrelation", "yin"],
+    default="autocorrelation")
+parser.add_argument("--yinThreshold",
+    help="YIN trough threshold",
+    default=0.1,
+    type=float)
+parser.add_argument("--lpcEstimator",
+    help="LPC coefficient estimation algorithm",
+    choices=["autocorrelation", "burg"],
+    default="autocorrelation")
 parser.add_argument("-f", "--outputFormat",
     help="Output file format",
-    choices=["arduino", "C", "hex", "python"],
+    choices=["arduino", "C", "hex", "python", "lpc"],
     default="hex")
+parser.add_argument("-o", "--output",
+    help="Write output to this file (defaults to the WAV name with .lpc for LPC output)")
 parser.add_argument("-T", "--tablesVariant",
     help="Tables variant",
     choices=tables.keys(),
@@ -84,12 +98,29 @@ if b is None:
 
 x=Processor(b, args.tablesVariant)
 
-result = BitPacker.pack(x)
-
 new_varname = os.path.basename(args.filename)
 new_varname = os.path.splitext(new_varname)[0]
 
 if re.match("^[^A-Za-z_]", new_varname):
     new_varname = "_"+new_varname
 
-print(result.replace("FILENAME", new_varname))
+if args.outputFormat == "lpc":
+    output_filename = args.output
+    if output_filename is None:
+        output_filename = os.path.splitext(args.filename)[0] + ".lpc"
+    try:
+        byte_count = BitPacker.write_lpc(x, output_filename)
+    except OSError as error:
+        parser.error("could not write {}: {}".format(output_filename, error))
+    print("Wrote {} LPC bytes to {}".format(byte_count, output_filename))
+else:
+    result = BitPacker.pack(x).replace("FILENAME", new_varname)
+    if args.output is None:
+        print(result)
+    else:
+        try:
+            with open(args.output, "w", encoding="utf-8") as output_file:
+                print(result, file=output_file)
+        except OSError as error:
+            parser.error("could not write {}: {}".format(args.output, error))
+        print("Wrote {} output to {}".format(args.outputFormat, args.output))

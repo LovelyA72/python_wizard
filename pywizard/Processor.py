@@ -2,7 +2,8 @@ from pywizard.Buffer import Buffer
 from pywizard.Filterer import Filterer
 from pywizard.Reflector import Reflector
 from pywizard.Segmenter import Segmenter
-from pywizard.PitchEstimator import PitchEstimator
+from pywizard.PitchDetector import create_pitch_detector_from_settings
+from pywizard.LpcEstimator import create_lpc_estimator_from_settings
 from pywizard.userSettings import settings
 from pywizard.HammingWindow import HammingWindow
 from pywizard.FrameData import FrameData
@@ -12,11 +13,21 @@ import numpy as np
 import logging
 
 class Processor(object):
-    def __init__(self, buf, model=None):
+    def __init__(self, buf, model=None, pitch_detector=None, lpc_estimator=None):
         self.mainBuffer = buf
         self.pitchTable = None
         self.pitchBuffer = Buffer.copy(buf)
         self.codingTable = CodingTable(model)
+        self.pitchDetector = (
+            pitch_detector
+            if pitch_detector is not None
+            else create_pitch_detector_from_settings()
+        )
+        self.lpcEstimator = (
+            lpc_estimator
+            if lpc_estimator is not None
+            else create_lpc_estimator_from_settings()
+        )
 
         if settings.preEmphasis:
             PreEmphasizer.processBuffer(buf)
@@ -28,15 +39,17 @@ class Processor(object):
         else:
             self.pitchTable = self.pitchTableForBuffer(self.pitchBuffer)
 
-        coefficients = np.zeros(11)
-
         segmenter = Segmenter(buf=self.mainBuffer, windowWidth=settings.windowWidth)
 
         frames = []
         for (cur_buf, i) in segmenter.eachSegment():
             HammingWindow.processBuffer(cur_buf)
-            coefficients = cur_buf.getCoefficientsFor()
-            reflector = Reflector.translateCoefficients(self.codingTable, coefficients, cur_buf.size)
+            lpc_estimate = self.lpcEstimator.estimate(cur_buf)
+            reflector = Reflector.fromLpcEstimate(
+                self.codingTable,
+                lpc_estimate,
+                cur_buf.size,
+            )
 
             if wrappedPitch:
                 pitch = int(wrappedPitch)
@@ -60,7 +73,7 @@ class Processor(object):
         pitchTable = np.zeros(segmenter.numberOfSegments())
 
         for (buf, index) in segmenter.eachSegment():
-            pitchTable[index] = PitchEstimator.pitchForPeriod(buf)
+            pitchTable[index] = self.pitchDetector.detect(buf)
 
         return pitchTable
 
