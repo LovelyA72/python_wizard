@@ -26,6 +26,7 @@ class GuiOptionTests(unittest.TestCase):
         self.assertEqual(choices["lpcEstimator"], ("autocorrelation", "burg"))
         self.assertEqual(choices["outputFormat"], ("arduino", "C", "hex", "python"))
         self.assertIn("tms5220", choices["tablesVariant"])
+        self.assertIn("Talkie", choices["tablesVariant"])
 
     def test_gui_exposes_optimizer_and_export_actions(self):
         gui = self.gui_module["Gui"]

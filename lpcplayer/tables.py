@@ -233,4 +233,9 @@ tables = {"tms5100": tms5100,
           "tms5110a": tms5110a,
           "tms5200": tms5200,
           "tms5220": tms5220,
+          # Talkie consumes the TMS5220 bitstream.  Its distinct software
+          # synthesis tables live in TalkieSynthesizer; encoding remains an
+          # exact alias of the TMS5220 conversion.
+          "Talkie": tms5220,
+          "talkie": tms5220,
          }

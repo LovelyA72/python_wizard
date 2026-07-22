@@ -27,7 +27,7 @@ SELECTOR_CHOICES = {
     "pitchDetector": ("autocorrelation", "yin"),
     "lpcEstimator": ("autocorrelation", "burg"),
     "outputFormat": ("arduino", "C", "hex", "python"),
-    "tablesVariant": ("tms5100", "tms5110a", "tms5200", "tms5220"),
+    "tablesVariant": ("tms5100", "tms5110a", "tms5200", "tms5220", "Talkie"),
 }
 
 SETTING_LABELS = {
@@ -422,7 +422,7 @@ class Gui(object):
             errors["rmsLimit"] = "must be between 0 and 14"
         if values["outputFormat"] not in ("arduino", "C", "hex", "python"):
             errors["outputFormat"] = "must be arduino, C, hex, or python"
-        if values["tablesVariant"] not in ("tms5100", "tms5110a", "tms5200", "tms5220"):
+        if values["tablesVariant"] not in ("tms5100", "tms5110a", "tms5200", "tms5220", "Talkie"):
             errors["tablesVariant"] = "unsupported table"
 
         if values["minimumPitchInHZ"] > 0:
@@ -750,7 +750,11 @@ class Gui(object):
         stream = None
         try:
             from lpcplayer import player, tables
-            decoder = player.LpcDecoder(tables.tables[chip_variant])
+            if chip_variant.lower() == "talkie":
+                from pywizard.TalkieSynthesizer import TalkieSynthesizer
+                decoder = TalkieSynthesizer()
+            else:
+                decoder = player.LpcDecoder(tables.tables[chip_variant])
             samples = decoder.decode(encoded_frames)
 
             audio = pyaudio.PyAudio()

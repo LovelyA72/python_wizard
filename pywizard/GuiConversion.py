@@ -14,6 +14,7 @@ from pywizard.FrameOptimizer import OptimizationConfig, OptimizationResult, opti
 from pywizard.Processor import Processor
 from pywizard.QuantizedFrame import QuantizedFrame
 from pywizard.TmsSynthesizer import TmsSynthesizer
+from pywizard.TalkieSynthesizer import TalkieSynthesizer
 from pywizard.userSettings import settings
 
 
@@ -48,7 +49,11 @@ def optimize_processor(
         progress_callback=progress_callback,
     )
     processor.frames = result.frames
-    synthesizer = TmsSynthesizer(chip_tables)
+    synthesizer = (
+        TalkieSynthesizer()
+        if chip_variant.lower() == "talkie"
+        else TmsSynthesizer(chip_tables)
+    )
     return (
         result,
         initial_frames,

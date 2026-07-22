@@ -2,9 +2,12 @@
 
 - Added "lpcplayer" package (based on talkie) to support Play feature in GUI. 
 
-- Added dirty support for other LPC coding tables. TMS5100 is default now.
+- Added support for other LPC coding tables and a **Talkie** conversion. Talkie
+  produces the exact same frame format and bytes as TMS5220, while GUI playback
+  and synthesized preview WAVs use the software synthesis algorithm ported from
+  the Arduino Talkie library.
   ```
-    -T {tms5220,tms5100}, --tablesVariant {tms5220,tms5100}
+    -T {tms5100,tms5110a,tms5200,tms5220,Talkie}
                           Tables variant
   ```                        
 

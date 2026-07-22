@@ -73,7 +73,7 @@ parser.add_argument("-o", "--output",
     help="Write output to this file (defaults to the WAV name with .lpc for LPC output)")
 parser.add_argument("-T", "--tablesVariant",
     help="Tables variant",
-    choices=tables.keys(),
+    choices=("tms5100", "tms5110a", "tms5200", "tms5220", "Talkie"),
     default="tms5220")
 parser.add_argument("--optimize", action="store_true",
     help="Optimize quantized frames using analysis-by-synthesis")
@@ -125,6 +125,7 @@ if args.optimize:
     )
     from pywizard.QuantizedFrame import QuantizedFrame
     from pywizard.TmsSynthesizer import TmsSynthesizer
+    from pywizard.TalkieSynthesizer import TalkieSynthesizer
 
     initial_frames = [QuantizedFrame.from_frame(frame) for frame in x.frames]
     config = OptimizationConfig(
@@ -136,8 +137,13 @@ if args.optimize:
     )
     result = optimize_frames(initial_frames, original_pcm, tables[args.tablesVariant], config)
     x.frames = result.frames
-    initial_audio = TmsSynthesizer(tables[args.tablesVariant]).synthesize(initial_frames)
-    optimized_audio = TmsSynthesizer(tables[args.tablesVariant]).synthesize(result.frames)
+    preview_synth = (
+        TalkieSynthesizer()
+        if args.tablesVariant.lower() == "talkie"
+        else TmsSynthesizer(tables[args.tablesVariant])
+    )
+    initial_audio = preview_synth.synthesize(initial_frames)
+    optimized_audio = preview_synth.synthesize(result.frames)
     if args.optimize_initial_wav:
         write_synthesized_wav(args.optimize_initial_wav, initial_audio)
     if args.optimize_optimized_wav:
