@@ -128,3 +128,43 @@ python_wizard -f lpc -o SPEECH.LPC speech.wav
 If `-o` is omitted for LPC output, the input name is reused with a `.lpc`
 extension. In the GUI, process a WAV file and select **File > Export LPC...**.
 
+### Analysis-by-synthesis optimization
+
+The command-line encoder can optionally improve quantized TMS52xx table
+indices with deterministic chip synthesis and bounded coordinate descent. The
+default path and bitstream writer are unchanged when `--optimize` is omitted.
+
+```text
+python_wizard --optimize --optimize-passes 2 --optimize-radius 1 \
+  --optimize-loss-profile balanced -f lpc -o speech.lpc speech.wav
+```
+
+For listening tests and regression analysis, export both synthesized versions
+and a detailed report:
+
+```text
+python_wizard --optimize --optimize-report optimization.json \
+  --optimize-initial-wav initial.wav \
+  --optimize-optimized-wav optimized.wav \
+  --optimize-parameters frames.json -f lpc -o speech.lpc speech.wav
+```
+
+The optimizer preserves silence, stop, repeat, and voiced/unvoiced structure.
+It searches energy, pitch, and individual K table neighbors in context. It is
+an offline quality pass, so it is slower than normal encoding; phase-sensitive
+waveform error is deliberately balanced with spectral and energy-envelope
+terms. Voicing changes and exhaustive/global search are not currently done.
+
+The GUI exposes the same optimizer in an **Analysis-by-synthesis optimizer**
+panel. Open a WAV, select the pass count, search radius, lookahead, and loss
+profile, then click **Convert**. Conversion is deliberately manual: opening a
+file or changing settings does not start work automatically. Analysis and
+optimization run in a spawned worker process with a separate Python interpreter,
+while an ASCII progress bar in the status line reports progress without
+freezing the interface. **Play LPC** becomes
+available after conversion completes. Initial and optimized synthesis WAVs,
+the JSON report, and indexed frame parameters can be saved from the **File**
+menu. Finite-choice encoder settings—including Vocoder/chip, Output
+language/format, Pitch estimator, and LPC estimator—are read-only dropdowns;
+numeric settings remain editable fields.
+

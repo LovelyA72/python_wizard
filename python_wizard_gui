@@ -6,8 +6,13 @@ import math
 import os
 import queue
 import threading
+import multiprocessing
+import json
 from collections import OrderedDict
-import pyaudio
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None
 
 
 #from backend import BitPacker, Processor, Buffer, settings, CodingTable
@@ -16,6 +21,33 @@ from pywizard.Processor import Processor
 from pywizard.Buffer import Buffer
 from pywizard.CodingTable import CodingTable
 from pywizard.userSettings import settings
+
+
+SELECTOR_CHOICES = {
+    "pitchDetector": ("autocorrelation", "yin"),
+    "lpcEstimator": ("autocorrelation", "burg"),
+    "outputFormat": ("arduino", "C", "hex", "python"),
+    "tablesVariant": ("tms5100", "tms5110a", "tms5200", "tms5220"),
+}
+
+SETTING_LABELS = {
+    "pitchDetector": "Pitch estimator",
+    "lpcEstimator": "LPC estimator",
+    "outputFormat": "Output language / format",
+    "tablesVariant": "Vocoder / chip",
+}
+
+
+def optimize_processor_for_gui(
+    processor, original_pcm, chip_variant, passes, radius, lookahead, loss_profile,
+    input_frame_samples, progress_callback=None,
+):
+    """Compatibility wrapper around the process-safe GUI optimizer helper."""
+    from pywizard.GuiConversion import optimize_processor
+    return optimize_processor(
+        processor, original_pcm, chip_variant, passes, radius, lookahead,
+        loss_profile, input_frame_samples, progress_callback,
+    )
 
 class Gui(object):
     NUM_ROWS = 15
@@ -30,38 +62,64 @@ class Gui(object):
 
         self.output_text = None
         self.processor = None
+        self.optimization_result = None
+        self.initial_quantized_frames = None
+        self.initial_synthesis = None
+        self.optimized_synthesis = None
         self.playback_active = False
         self.playback_events = queue.SimpleQueue()
+        self.conversion_active = False
+        self.conversion_stale = True
+        self.mp_context = multiprocessing.get_context("spawn")
+        self.conversion_events = None
+        self.conversion_process = None
+        self.finished_conversion_processes = []
 
         root.title('Python Wizard') # title for top-level window
         # quit if the window is deleted
         root.protocol("WM_DELETE_WINDOW", self.quit)
         self.graph_frame = self._make_graphs()
         self.settings_frame = self._make_settings()
+        self.optimizer_frame = self._make_optimizer_settings()
         self.play_controls = self._make_play_controls()
         self.table_frame = self._make_table()
         self.menu = self._make_menus()
         root.option_add('*tearOff', FALSE)
 
         self.first_line = 0
-        self.run = False
         self.frames = []
         self.bytes=0
 
 
     def quit(self):
+        if self.conversion_process is not None and self.conversion_process.is_alive():
+            self.conversion_process.terminate()
+            self.conversion_process.join(timeout=1)
+        for process in self.finished_conversion_processes:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=1)
         self.master.quit()
 
     def _file_open(self):
+        if self.conversion_active:
+            messagebox.showinfo("Conversion running", "Wait for the current conversion to finish.")
+            return
         self.filename = filedialog.askopenfilename(parent=self.master,filetypes=[('Waves',"*.wav")])
         if self.filename:
             self.processor = None
+            self.optimization_result = None
+            self.initial_quantized_frames = None
+            self.initial_synthesis = None
+            self.optimized_synthesis = None
             self.frames = []
             self.play_button.configure(state=DISABLED)
-            self.run = True
+            self.convert_button.configure(state=NORMAL)
+            self.conversion_stale = True
+            self.statusbar['text'] = "WAV loaded; click Convert"
 
     def _file_export_lpc(self):
-        if self.processor is None:
+        if self.processor is None or self.conversion_stale:
             messagebox.showinfo("Nothing to export", "Open a WAV file and convert it first.")
             return
 
@@ -86,6 +144,53 @@ class Gui(object):
 
         self.statusbar['text'] = "Exported {} LPC bytes to {}".format(byte_count, filename)
 
+    def _save_synthesis(self, optimized):
+        audio = self.optimized_synthesis if optimized else self.initial_synthesis
+        if audio is None:
+            messagebox.showinfo("Nothing to export", "Enable optimization and convert a WAV first.")
+            return
+        suffix = "optimized" if optimized else "initial"
+        filename = filedialog.asksaveasfilename(
+            parent=self.master, title="Export {} synthesis".format(suffix),
+            defaultextension=".wav", initialdir=os.path.dirname(self.filename),
+            initialfile="{}_{}.wav".format(os.path.splitext(os.path.basename(self.filename))[0], suffix),
+            filetypes=[("Wave audio", "*.wav"), ("All files", "*.*")],
+        )
+        if filename:
+            from pywizard.FrameOptimizer import write_synthesized_wav
+            write_synthesized_wav(filename, audio)
+            self.statusbar['text'] = "Exported {} synthesis to {}".format(suffix, filename)
+
+    def _file_export_optimization_report(self):
+        if self.optimization_result is None:
+            messagebox.showinfo("Nothing to export", "Enable optimization and convert a WAV first.")
+            return
+        filename = filedialog.asksaveasfilename(
+            parent=self.master, title="Export optimization report",
+            defaultextension=".json", initialdir=os.path.dirname(self.filename),
+            initialfile="optimization_report.json",
+            filetypes=[("JSON report", "*.json"), ("All files", "*.*")],
+        )
+        if filename:
+            from pywizard.FrameOptimizer import write_report
+            write_report(filename, self.optimization_result)
+            self.statusbar['text'] = "Exported optimization report to {}".format(filename)
+
+    def _file_export_optimization_parameters(self):
+        if self.optimization_result is None:
+            messagebox.showinfo("Nothing to export", "Enable optimization and convert a WAV first.")
+            return
+        filename = filedialog.asksaveasfilename(
+            parent=self.master, title="Export optimized frame parameters",
+            defaultextension=".json", initialdir=os.path.dirname(self.filename),
+            initialfile="optimized_frames.json",
+            filetypes=[("JSON parameters", "*.json"), ("All files", "*.*")],
+        )
+        if filename:
+            with open(filename, "w", encoding="utf-8") as output_file:
+                json.dump([frame.as_dict() for frame in self.optimization_result.frames], output_file, indent=2)
+            self.statusbar['text'] = "Exported optimized parameters to {}".format(filename)
+
 
     def _make_menus(self):
         menubar = Menu(self.master)
@@ -96,6 +201,11 @@ class Gui(object):
 
         menu_file.add_command(label="Open WAV", command=self._file_open)
         menu_file.add_command(label="Export LPC...", command=self._file_export_lpc)
+        menu_file.add_separator()
+        menu_file.add_command(label="Export Initial Synthesis WAV...", command=lambda: self._save_synthesis(False))
+        menu_file.add_command(label="Export Optimized Synthesis WAV...", command=lambda: self._save_synthesis(True))
+        menu_file.add_command(label="Export Optimization Report...", command=self._file_export_optimization_report)
+        menu_file.add_command(label="Export Optimized Parameters...", command=self._file_export_optimization_parameters)
         menu_file.add_separator()
         menu_file.add_command(label="Quit", command=self.quit)
         
@@ -126,7 +236,7 @@ class Gui(object):
         rows = 7
         var = {}
         for key in raw_settings:
-            Label(settings_frame, text=key).grid(row=row,column=col)
+            Label(settings_frame, text=SETTING_LABELS.get(key, key)).grid(row=row,column=col)
 
             v = None
             typ = type(raw_settings[key])
@@ -139,7 +249,13 @@ class Gui(object):
             else:
                 v=StringVar()
             v.set(raw_settings[key])
-            if typ is not bool:
+            if key in SELECTOR_CHOICES:
+                e = Combobox(
+                    settings_frame, textvariable=v,
+                    values=SELECTOR_CHOICES[key], state="readonly", width=18,
+                )
+                e.bind("<<ComboboxSelected>>", lambda _event: self.check_change())
+            elif typ is not bool:
                 e = Entry(settings_frame, textvar=v)
                 e.bind("<FocusOut>", self._setting_focus_out)
             else:
@@ -159,6 +275,49 @@ class Gui(object):
         settings_frame.pack()
         return settings_frame
 
+    def _make_optimizer_settings(self):
+        optimizer = LabelFrame(self.root, text="Analysis-by-synthesis optimizer")
+        self.optimizer_widgets = []
+        self.optimize_enabled = BooleanVar(value=False)
+        self.optimize_passes = IntVar(value=2)
+        self.optimize_radius = IntVar(value=1)
+        self.optimize_lookahead = IntVar(value=1)
+        self.optimize_loss_profile = StringVar(value="balanced")
+
+        enable_checkbox = Checkbutton(
+            optimizer, text="Enable optimization", variable=self.optimize_enabled,
+            command=self._optimizer_changed,
+        )
+        enable_checkbox.grid(row=0, column=0, columnspan=2, padx=5, pady=3, sticky=W)
+        self.optimizer_widgets.append(enable_checkbox)
+        controls = (
+            ("Passes", self.optimize_passes, (1, 2, 3, 4, 5)),
+            ("Search radius", self.optimize_radius, (1, 2)),
+            ("Lookahead", self.optimize_lookahead, (0, 1, 2, 3)),
+            ("Loss profile", self.optimize_loss_profile, ("balanced", "spectral", "waveform")),
+        )
+        for column, (label, variable, values) in enumerate(controls):
+            Label(optimizer, text=label).grid(row=1, column=column * 2, padx=(5, 2), sticky=E)
+            selector = Combobox(
+                optimizer, textvariable=variable, values=values,
+                state="readonly", width=10,
+            )
+            selector.grid(row=1, column=column * 2 + 1, padx=(2, 7), pady=4, sticky=W)
+            selector.bind("<<ComboboxSelected>>", self._optimizer_changed)
+            self.optimizer_widgets.append(selector)
+        optimizer.pack(fill=X, padx=4, pady=3)
+        return optimizer
+
+    def _optimizer_changed(self, _event=None):
+        self.optimization_result = None
+        self.initial_quantized_frames = None
+        self.initial_synthesis = None
+        self.optimized_synthesis = None
+        if self.filename is not None:
+            self.play_button.configure(state=DISABLED)
+            self.conversion_stale = True
+            self.statusbar['text'] = "Optimizer settings changed; click Convert"
+
     def _make_play_controls(self):
         controls = Frame(self.root)
         self.play_button = Button(
@@ -169,6 +328,14 @@ class Gui(object):
             padx=16,
         )
         self.play_button.pack(side=RIGHT, padx=8, pady=6)
+        self.convert_button = Button(
+            controls,
+            text="Convert",
+            command=self._start_conversion,
+            state=DISABLED,
+            padx=16,
+        )
+        self.convert_button.pack(side=RIGHT, padx=8, pady=6)
         controls.pack(fill=X)
         return controls
 
@@ -189,7 +356,7 @@ class Gui(object):
     def check_change(self):
         new_cfg = self._get_data()
         if new_cfg is None:
-            return
+            return False
 
         raw_settings = settings.export_to_odict()
 
@@ -205,7 +372,7 @@ class Gui(object):
                 self.statusbar['text'] = "; ".join(
                     "{}: {}".format(key, reason) for key, reason in errors.items()
                 )
-                return
+                return False
 
             for k in raw_settings:
                 if new_cfg[k] != raw_settings[k]:
@@ -214,13 +381,15 @@ class Gui(object):
             if errors is None:
                 if self.filename is not None:
                     self.play_button.configure(state=DISABLED)
-                    self.statusbar['text'] = "Waiting to process…"
-                    self.run = True
+                    self.conversion_stale = True
+                    self.statusbar['text'] = "Settings changed; click Convert"
             else:
-                # Mark wrong input fiels appropriately
+                # Mark wrong input fields appropriately.
                 for e in errors:
                     self.settings_widgets[e].configure(background='red')
                 self.statusbar['text'] = "Invalid setting: {}".format(", ".join(errors))
+                return False
+        return True
 
     def _validate_settings(self, values):
         errors = {}
@@ -406,35 +575,148 @@ class Gui(object):
             if changed:
                 self._update_output()
 
-    def _repeatedly(self):
-        self.root.after(500, self._repeatedly)
-        self._handle_playback_events()
-        if self.processor is not None:
-            self._readback_table()
-        if self.run:
-            self.run = False
-            self.play_button.configure(state=DISABLED)
-            self.statusbar['text'] = "Processing…"
-            self.root.update_idletasks()
+    @staticmethod
+    def _progress_bar(current, total, label, width=24):
+        """Format a compact ASCII progress bar for the status label."""
+        fraction = 0.0 if total <= 0 else max(0.0, min(1.0, current / total))
+        filled = int(round(width * fraction))
+        return "[{}{}] {:3.0f}% {}".format(
+            "#" * filled, "-" * (width - filled), fraction * 100, label,
+        )
+
+    def _set_conversion_controls(self, enabled):
+        state = NORMAL if enabled else DISABLED
+        for key, widget in self.settings_widgets.items():
+            widget.configure(state="readonly" if enabled and key in SELECTOR_CHOICES else state)
+        for widget in self.optimizer_widgets:
+            if enabled and isinstance(widget, Combobox):
+                widget.configure(state="readonly")
+            else:
+                widget.configure(state=state)
+        self.convert_button.configure(
+            state=NORMAL if enabled and self.filename is not None else DISABLED
+        )
+
+    def _start_conversion(self):
+        if self.conversion_active:
+            return
+        if not self.filename:
+            messagebox.showinfo("Nothing to convert", "Open a WAV file first.")
+            return
+        if not self.check_change():
+            return
+
+        self.conversion_active = True
+        self.conversion_stale = True
+        self.play_button.configure(state=DISABLED)
+        self._set_conversion_controls(False)
+        self.statusbar['text'] = self._progress_bar(0, 1, "Analyzing WAV…")
+        self.optimization_result = None
+        self.initial_quantized_frames = None
+        self.initial_synthesis = None
+        self.optimized_synthesis = None
+
+        from pywizard.GuiConversion import run_conversion_process
+
+        optimizer_values = {
+            "enabled": bool(self.optimize_enabled.get()),
+            "passes": int(self.optimize_passes.get()),
+            "radius": int(self.optimize_radius.get()),
+            "lookahead": int(self.optimize_lookahead.get()),
+            "loss_profile": self.optimize_loss_profile.get(),
+            "input_frame_samples": max(1, int(round(8 * settings.frameRate))),
+        }
+        self.conversion_events = self.mp_context.Queue()
+        self.conversion_process = self.mp_context.Process(
+            target=run_conversion_process,
+            args=(
+                self.conversion_events, self.filename,
+                dict(settings.export_to_odict()), optimizer_values,
+            ),
+            daemon=True,
+        )
+        self.conversion_process.start()
+
+    def _finish_conversion_process(self):
+        if self.conversion_process is not None:
+            self.conversion_process.join(timeout=0)
+            if self.conversion_process.is_alive():
+                self.finished_conversion_processes.append(self.conversion_process)
+            else:
+                self.conversion_process.close()
+            self.conversion_process = None
+        if self.conversion_events is not None:
+            self.conversion_events.close()
+            self.conversion_events = None
+
+    def _reap_conversion_processes(self):
+        remaining = []
+        for process in self.finished_conversion_processes:
+            process.join(timeout=0)
+            if process.is_alive():
+                remaining.append(process)
+            else:
+                process.close()
+        self.finished_conversion_processes = remaining
+
+    def _handle_conversion_events(self):
+        if self.conversion_events is None:
+            return
+        while True:
             try:
-                self.codingTable = CodingTable(settings.tablesVariant)
-                b = Buffer.fromWave(self.filename)
-                if b is None:
-                    self.processor = None
-                    messagebox.showerror("Could not read file", "The specified file could not be read!\nMust be mono, 8 or 16 bit WAV file.")
-                    return
-                self.processor = Processor(b, settings.tablesVariant)
-                self._update_table(self.processor.frames)
-                self._update_output()
-                self.statusbar['text'] = "Processing complete"
-            except Exception as error:
+                event, value = self.conversion_events.get_nowait()
+            except queue.Empty:
+                break
+            if event == "progress":
+                current, total = value
+                self.statusbar['text'] = self._progress_bar(
+                    current, total, "Optimizing frames…"
+                )
+                continue
+
+            self.conversion_active = False
+            self._set_conversion_controls(True)
+            self._finish_conversion_process()
+            if event == "error":
                 self.processor = None
                 self.frames = []
-                self.statusbar['text'] = "Processing failed"
-                messagebox.showerror("Processing failed", str(error))
-            finally:
-                if self.processor is not None and not self.playback_active:
-                    self.play_button.configure(state=NORMAL)
+                self.conversion_stale = True
+                self.play_button.configure(state=DISABLED)
+                self.statusbar['text'] = "Conversion failed"
+                messagebox.showerror("Conversion failed", value)
+                return
+
+            (
+                self.processor, chip_variant, self.optimization_result,
+                self.initial_quantized_frames, self.initial_synthesis,
+                self.optimized_synthesis,
+            ) = value
+            self.codingTable = CodingTable(chip_variant)
+            self.conversion_stale = False
+            self._update_table(self.processor.frames)
+            self._update_output()
+            if not self.playback_active:
+                self.play_button.configure(state=NORMAL)
+            if self.optimization_result is None:
+                self.statusbar['text'] = self._progress_bar(1, 1, "Conversion complete")
+            else:
+                result = self.optimization_result
+                self.statusbar['text'] = self._progress_bar(1, 1, (
+                    "{} of {} changed; loss {:.4f} → {:.4f} ({:.2f}%), {:.2f}s"
+                ).format(
+                    result.changed_frames, len(result.frames), result.initial_loss,
+                    result.optimized_loss, result.improvement_percent,
+                    result.elapsed_seconds,
+                ))
+            return
+
+    def _repeatedly(self):
+        self.root.after(100, self._repeatedly)
+        self._handle_playback_events()
+        self._handle_conversion_events()
+        self._reap_conversion_processes()
+        if self.processor is not None and not self.conversion_active:
+            self._readback_table()
 
     def _update_output(self):
             result = BitPacker.pack(self.processor)
@@ -442,7 +724,7 @@ class Gui(object):
             self.output_text.insert(END, result)
 
     def play(self):
-        if self.processor is None:
+        if self.processor is None or self.conversion_stale:
             messagebox.showinfo("Nothing to play", "Open a WAV file and convert it first.")
             return
         if pyaudio is None:
@@ -499,14 +781,14 @@ class Gui(object):
         self.root.after(500, self._repeatedly)
         self.master.mainloop()
 
-settings.outputFormat='python'
-settings.tablesVariant='tms5100'
+def main():
+    settings.outputFormat = 'python'
+    settings.tablesVariant = 'tms5100'
+    logging.basicConfig(level=logging.INFO)
+    root = Tk()
+    gui = Gui(root)
+    gui.mainloop()
 
 
-logging.basicConfig(level=logging.INFO)
-# start the app
-root = Tk() # create a top-level window
-gui = Gui(root)
 if __name__ == "__main__":
-    gui.mainloop() # call master's Frame.mainloop() method.
-    #root.destroy() # if mainloop quits, destroy window
+    main()

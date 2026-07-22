@@ -3,6 +3,8 @@ import logging
 import re
 import os
 import sys
+import json
+from collections import Counter
 from lpcplayer.tables import tables
 
 '''
@@ -73,6 +75,24 @@ parser.add_argument("-T", "--tablesVariant",
     help="Tables variant",
     choices=tables.keys(),
     default="tms5220")
+parser.add_argument("--optimize", action="store_true",
+    help="Optimize quantized frames using analysis-by-synthesis")
+parser.add_argument("--optimize-passes", default=2, type=int,
+    help="Maximum coordinate-descent passes (default: 2)")
+parser.add_argument("--optimize-radius", default=1, type=int,
+    help="Neighboring table-index radius (default: 1)")
+parser.add_argument("--optimize-lookahead", default=1, type=int,
+    help="25-sample boundary blocks included from the next frame")
+parser.add_argument("--optimize-loss-profile", choices=["waveform", "spectral", "balanced"],
+    default="balanced", help="Optimization loss weighting (default: balanced)")
+parser.add_argument("--optimize-report", metavar="PATH",
+    help="Write a per-frame optimization report as JSON")
+parser.add_argument("--optimize-initial-wav", metavar="PATH",
+    help="Export synthesis of the initial quantized frames")
+parser.add_argument("--optimize-optimized-wav", metavar="PATH",
+    help="Export synthesis of the optimized quantized frames")
+parser.add_argument("--optimize-parameters", metavar="PATH",
+    help="Export final indexed frame parameters as JSON")
 
 parser.add_argument("filename",
     help="File name of a .wav file to be processed",
@@ -95,8 +115,51 @@ from pywizard.CodingTable import CodingTable
 b=Buffer.fromWave(args.filename)
 if b is None:
     sys.exit()
+original_pcm = b.samples.copy()
 
 x=Processor(b, args.tablesVariant)
+
+if args.optimize:
+    from pywizard.FrameOptimizer import (
+        OptimizationConfig, optimize_frames, write_report, write_synthesized_wav,
+    )
+    from pywizard.QuantizedFrame import QuantizedFrame
+    from pywizard.TmsSynthesizer import TmsSynthesizer
+
+    initial_frames = [QuantizedFrame.from_frame(frame) for frame in x.frames]
+    config = OptimizationConfig(
+        passes=max(0, args.optimize_passes),
+        radius=max(0, args.optimize_radius),
+        lookahead=max(0, args.optimize_lookahead),
+        loss_profile=args.optimize_loss_profile,
+        input_frame_samples=max(1, int(round(8 * args.frameRate))),
+    )
+    result = optimize_frames(initial_frames, original_pcm, tables[args.tablesVariant], config)
+    x.frames = result.frames
+    initial_audio = TmsSynthesizer(tables[args.tablesVariant]).synthesize(initial_frames)
+    optimized_audio = TmsSynthesizer(tables[args.tablesVariant]).synthesize(result.frames)
+    if args.optimize_initial_wav:
+        write_synthesized_wav(args.optimize_initial_wav, initial_audio)
+    if args.optimize_optimized_wav:
+        write_synthesized_wav(args.optimize_optimized_wav, optimized_audio)
+    if args.optimize_report:
+        write_report(args.optimize_report, result)
+    if args.optimize_parameters:
+        with open(args.optimize_parameters, "w", encoding="utf-8") as parameter_file:
+            json.dump([frame.as_dict() for frame in result.frames], parameter_file, indent=2)
+    counts = Counter(p for change in result.changes for p in change["parameters_changed"])
+    print(
+        "Optimization: {} frames, {} changed, loss {:.6f} -> {:.6f} "
+        "({:.2f}% improvement), {:.2f}s, {} candidate evaluations".format(
+            len(initial_frames), result.changed_frames, result.initial_loss,
+            result.optimized_loss, result.improvement_percent,
+            result.elapsed_seconds, result.candidate_evaluations,
+        ), file=sys.stderr,
+    )
+    if counts:
+        print("Most changed parameters: " + ", ".join(
+            "{}={}".format(name, count) for name, count in counts.most_common()
+        ), file=sys.stderr)
 
 new_varname = os.path.basename(args.filename)
 new_varname = os.path.splitext(new_varname)[0]
