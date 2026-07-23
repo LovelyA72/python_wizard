@@ -75,6 +75,14 @@ parser.add_argument("-T", "--tablesVariant",
     help="Tables variant",
     choices=("tms5100", "tms5110a", "tms5200", "tms5220", "Talkie"),
     default="tms5220")
+parser.add_argument("--talkieMitigationStrength",
+    help="Talkie burst mitigation strength from 0 (off) to 3 (default: 1)",
+    default=1.0,
+    type=float)
+parser.add_argument("--talkieGateThreshold",
+    help="Talkie three-frame RMS gate threshold from 0 (off) to 1 (default: 0)",
+    default=0.0,
+    type=float)
 parser.add_argument("--optimize", action="store_true",
     help="Optimize quantized frames using analysis-by-synthesis")
 parser.add_argument("--optimize-passes", default=2, type=int,
@@ -100,6 +108,11 @@ parser.add_argument("filename",
 
 args = parser.parse_args()
 
+if not 0 <= args.talkieMitigationStrength <= 3:
+    parser.error("--talkieMitigationStrength must be between 0 and 3")
+if not 0 <= args.talkieGateThreshold <= 1:
+    parser.error("--talkieGateThreshold must be between 0 and 1")
+
 if args.debug:
     logging.basicConfig(level=logging.DEBUG)
 
@@ -119,6 +132,34 @@ original_pcm = b.samples.copy()
 
 x=Processor(b, args.tablesVariant)
 
+talkie_config = None
+if args.tablesVariant.lower() == "talkie":
+    from pywizard.QuantizedFrame import QuantizedFrame
+    from pywizard.TalkieMitigator import (
+        TalkieMitigationConfig, mitigate_talkie_frames,
+    )
+    talkie_config = TalkieMitigationConfig(
+        strength=args.talkieMitigationStrength,
+        gate_threshold=args.talkieGateThreshold,
+        input_frame_samples=max(1, int(round(8 * args.frameRate))),
+    )
+    talkie_mitigation = mitigate_talkie_frames(
+        [QuantizedFrame.from_frame(frame) for frame in x.frames],
+        original_pcm,
+        talkie_config,
+    )
+    x.frames = talkie_mitigation.frames
+    if talkie_mitigation.changed_frames:
+        print(
+            "Talkie processing: adjusted {} frame{} ({} gated) in {:.3f}s".format(
+                talkie_mitigation.changed_frames,
+                "" if talkie_mitigation.changed_frames == 1 else "s",
+                talkie_mitigation.gated_frames,
+                talkie_mitigation.elapsed_seconds,
+            ),
+            file=sys.stderr,
+        )
+
 if args.optimize:
     from pywizard.FrameOptimizer import (
         OptimizationConfig, optimize_frames, write_report, write_synthesized_wav,
@@ -137,13 +178,21 @@ if args.optimize:
     )
     result = optimize_frames(initial_frames, original_pcm, tables[args.tablesVariant], config)
     x.frames = result.frames
+    if talkie_config is not None:
+        talkie_mitigation = mitigate_talkie_frames(
+            result.frames,
+            original_pcm,
+            talkie_config,
+        )
+        x.frames = talkie_mitigation.frames
+        result.frames = x.frames
     preview_synth = (
         TalkieSynthesizer()
         if args.tablesVariant.lower() == "talkie"
         else TmsSynthesizer(tables[args.tablesVariant])
     )
     initial_audio = preview_synth.synthesize(initial_frames)
-    optimized_audio = preview_synth.synthesize(result.frames)
+    optimized_audio = preview_synth.synthesize(x.frames)
     if args.optimize_initial_wav:
         write_synthesized_wav(args.optimize_initial_wav, initial_audio)
     if args.optimize_optimized_wav:

@@ -15,6 +15,11 @@ from pywizard.Processor import Processor
 from pywizard.QuantizedFrame import QuantizedFrame
 from pywizard.TmsSynthesizer import TmsSynthesizer
 from pywizard.TalkieSynthesizer import TalkieSynthesizer
+from pywizard.TalkieMitigator import (
+    TalkieMitigationConfig,
+    TalkieMitigationResult,
+    mitigate_talkie_frames,
+)
 from pywizard.userSettings import settings
 
 
@@ -24,6 +29,25 @@ class ConvertedProcessor:
 
     frames: list[QuantizedFrame] | list[object]
     codingTable: CodingTable
+
+
+def synthesize_frames(
+    frames: list[QuantizedFrame] | list[object],
+    chip_variant: str,
+) -> np.ndarray:
+    """Synthesize the currently processed frames for GUI WAV export."""
+    quantized = [
+        frame
+        if isinstance(frame, QuantizedFrame)
+        else QuantizedFrame.from_frame(frame)
+        for frame in frames
+    ]
+    synthesizer = (
+        TalkieSynthesizer()
+        if chip_variant.lower() == "talkie"
+        else TmsSynthesizer(tables[chip_variant])
+    )
+    return synthesizer.synthesize(quantized)
 
 
 def optimize_processor(
@@ -37,7 +61,7 @@ def optimize_processor(
     input_frame_samples: int,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[OptimizationResult, list[QuantizedFrame], np.ndarray, np.ndarray]:
-    """Run the shared optimizer and retain audio needed by GUI exports."""
+    """Run the shared optimizer and retain its before/after comparison audio."""
     initial_frames = [QuantizedFrame.from_frame(frame) for frame in processor.frames]
     config = OptimizationConfig(
         passes=passes, radius=radius, lookahead=lookahead,
@@ -49,16 +73,11 @@ def optimize_processor(
         progress_callback=progress_callback,
     )
     processor.frames = result.frames
-    synthesizer = (
-        TalkieSynthesizer()
-        if chip_variant.lower() == "talkie"
-        else TmsSynthesizer(chip_tables)
-    )
     return (
         result,
         initial_frames,
-        synthesizer.synthesize(initial_frames),
-        synthesizer.synthesize(result.frames),
+        synthesize_frames(initial_frames, chip_variant),
+        synthesize_frames(result.frames, chip_variant),
     )
 
 
@@ -80,6 +99,19 @@ def run_conversion_process(
         original_pcm = buffer.samples.copy()
         analyzed = Processor(buffer, chip_variant)
         result = initial_frames = initial_audio = optimized_audio = None
+        talkie_mitigation: TalkieMitigationResult | None = None
+
+        if chip_variant.lower() == "talkie":
+            talkie_mitigation = mitigate_talkie_frames(
+                [QuantizedFrame.from_frame(frame) for frame in analyzed.frames],
+                original_pcm,
+                TalkieMitigationConfig(
+                    strength=float(settings.talkieMitigationStrength),
+                    gate_threshold=float(settings.talkieGateThreshold),
+                    input_frame_samples=max(1, int(round(8 * settings.frameRate))),
+                ),
+            )
+            analyzed.frames = talkie_mitigation.frames
 
         if optimizer_values["enabled"]:
             def report_progress(current: int, total: int) -> None:
@@ -96,11 +128,28 @@ def run_conversion_process(
                 int(optimizer_values["input_frame_samples"]),
                 report_progress,
             )
+            if chip_variant.lower() == "talkie":
+                talkie_mitigation = mitigate_talkie_frames(
+                    result.frames,
+                    original_pcm,
+                    TalkieMitigationConfig(
+                        strength=float(settings.talkieMitigationStrength),
+                        gate_threshold=float(settings.talkieGateThreshold),
+                        input_frame_samples=max(
+                            1, int(round(8 * settings.frameRate)),
+                        ),
+                    ),
+                )
+                analyzed.frames = talkie_mitigation.frames
+                result.frames = analyzed.frames
+                optimized_audio = TalkieSynthesizer().synthesize(
+                    analyzed.frames,
+                )
 
         processor = ConvertedProcessor(analyzed.frames, analyzed.codingTable)
         event_queue.put(("complete", (
             processor, chip_variant, result, initial_frames,
-            initial_audio, optimized_audio,
+            initial_audio, optimized_audio, talkie_mitigation,
         )))
     except Exception as error:
         event_queue.put(("error", str(error)))

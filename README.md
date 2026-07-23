@@ -3,9 +3,19 @@
 - Added "lpcplayer" package (based on talkie) to support Play feature in GUI. 
 
 - Added support for other LPC coding tables and a **Talkie** conversion. Talkie
-  produces the exact same frame format and bytes as TMS5220, while GUI playback
-  and synthesized preview WAVs use the software synthesis algorithm ported from
-  the Arduino Talkie library.
+  uses the TMS5220 frame format and base quantization, while GUI playback and
+  synthesized preview WAVs use the software synthesis algorithm ported from the
+  Arduino Talkie library. Normal Talkie conversion also runs a fast,
+  source-aware burst guard over unvoiced frames. It lowers only disproportionate
+  noise-frame energy while preserving the LPC format, timing, voicing, and
+  coefficients; the full optimizer is not required. **Talkie mitigation
+  strength** defaults to `1.0`, accepts `0.0` through `3.0`, and can be set to
+  zero to disable the burst guard. **Talkie gate threshold** defaults to `0.0`
+  (disabled) and accepts `0.0` through `1.0`. Runs of at least three frames
+  whose source RMS is below the threshold are encoded as silence. When a rest
+  frame would retain a buzzing fixed-point filter state, the first gated frame
+  is instead a zero-excitation transition that loads stable coefficients; the
+  remaining rest frames then synthesize as exact silence.
   ```
     -T {tms5100,tms5110a,tms5200,tms5220,Talkie}
                           Tables variant
@@ -158,7 +168,7 @@ an offline quality pass, so it is slower than normal encoding; phase-sensitive
 waveform error is deliberately balanced with spectral and energy-envelope
 terms. Voicing changes and exhaustive/global search are not currently done.
 
-The GUI exposes the same optimizer in an **Analysis-by-synthesis optimizer**
+The GUI exposes the same optimizer in an **Analysis-by-synthesis**
 panel. Open a WAV, select the pass count, search radius, lookahead, and loss
 profile, then click **Convert**. Conversion is deliberately manual: opening a
 file or changing settings does not start work automatically. Analysis and

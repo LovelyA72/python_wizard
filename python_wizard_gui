@@ -7,7 +7,6 @@ import os
 import queue
 import threading
 import multiprocessing
-import json
 from collections import OrderedDict
 try:
     import pyaudio
@@ -35,6 +34,8 @@ SETTING_LABELS = {
     "lpcEstimator": "LPC estimator",
     "outputFormat": "Output language / format",
     "tablesVariant": "Vocoder / chip",
+    "talkieMitigationStrength": "Talkie mitigation strength",
+    "talkieGateThreshold": "Talkie gate threshold",
 }
 
 
@@ -62,10 +63,12 @@ class Gui(object):
 
         self.output_text = None
         self.processor = None
+        self.chip_variant = settings.tablesVariant
         self.optimization_result = None
         self.initial_quantized_frames = None
         self.initial_synthesis = None
         self.optimized_synthesis = None
+        self.talkie_mitigation = None
         self.playback_active = False
         self.playback_events = queue.SimpleQueue()
         self.conversion_active = False
@@ -112,6 +115,7 @@ class Gui(object):
             self.initial_quantized_frames = None
             self.initial_synthesis = None
             self.optimized_synthesis = None
+            self.talkie_mitigation = None
             self.frames = []
             self.play_button.configure(state=DISABLED)
             self.convert_button.configure(state=NORMAL)
@@ -144,52 +148,41 @@ class Gui(object):
 
         self.statusbar['text'] = "Exported {} LPC bytes to {}".format(byte_count, filename)
 
-    def _save_synthesis(self, optimized):
-        audio = self.optimized_synthesis if optimized else self.initial_synthesis
-        if audio is None:
-            messagebox.showinfo("Nothing to export", "Enable optimization and convert a WAV first.")
+    def _file_export_wav(self):
+        if self.processor is None or self.conversion_stale:
+            messagebox.showinfo(
+                "Nothing to export",
+                "Open a WAV file and convert it first.",
+            )
             return
-        suffix = "optimized" if optimized else "initial"
+
+        basename = os.path.splitext(os.path.basename(self.filename))[0] + "_synthesis.wav"
         filename = filedialog.asksaveasfilename(
-            parent=self.master, title="Export {} synthesis".format(suffix),
-            defaultextension=".wav", initialdir=os.path.dirname(self.filename),
-            initialfile="{}_{}.wav".format(os.path.splitext(os.path.basename(self.filename))[0], suffix),
+            parent=self.master,
+            title="Export WAV",
+            defaultextension=".wav",
+            initialdir=os.path.dirname(self.filename),
+            initialfile=basename,
             filetypes=[("Wave audio", "*.wav"), ("All files", "*.*")],
         )
-        if filename:
+        if not filename:
+            return
+
+        try:
             from pywizard.FrameOptimizer import write_synthesized_wav
+            from pywizard.GuiConversion import synthesize_frames
+
+            audio = synthesize_frames(
+                self.processor.frames,
+                self.chip_variant,
+            )
             write_synthesized_wav(filename, audio)
-            self.statusbar['text'] = "Exported {} synthesis to {}".format(suffix, filename)
-
-    def _file_export_optimization_report(self):
-        if self.optimization_result is None:
-            messagebox.showinfo("Nothing to export", "Enable optimization and convert a WAV first.")
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Export failed", str(error))
+            self.statusbar['text'] = "WAV export failed"
             return
-        filename = filedialog.asksaveasfilename(
-            parent=self.master, title="Export optimization report",
-            defaultextension=".json", initialdir=os.path.dirname(self.filename),
-            initialfile="optimization_report.json",
-            filetypes=[("JSON report", "*.json"), ("All files", "*.*")],
-        )
-        if filename:
-            from pywizard.FrameOptimizer import write_report
-            write_report(filename, self.optimization_result)
-            self.statusbar['text'] = "Exported optimization report to {}".format(filename)
 
-    def _file_export_optimization_parameters(self):
-        if self.optimization_result is None:
-            messagebox.showinfo("Nothing to export", "Enable optimization and convert a WAV first.")
-            return
-        filename = filedialog.asksaveasfilename(
-            parent=self.master, title="Export optimized frame parameters",
-            defaultextension=".json", initialdir=os.path.dirname(self.filename),
-            initialfile="optimized_frames.json",
-            filetypes=[("JSON parameters", "*.json"), ("All files", "*.*")],
-        )
-        if filename:
-            with open(filename, "w", encoding="utf-8") as output_file:
-                json.dump([frame.as_dict() for frame in self.optimization_result.frames], output_file, indent=2)
-            self.statusbar['text'] = "Exported optimized parameters to {}".format(filename)
+        self.statusbar['text'] = "Exported current synthesis to {}".format(filename)
 
 
     def _make_menus(self):
@@ -200,12 +193,8 @@ class Gui(object):
         menubar.add_cascade(menu=menu_file, label="File")
 
         menu_file.add_command(label="Open WAV", command=self._file_open)
+        menu_file.add_command(label="Export WAV", command=self._file_export_wav)
         menu_file.add_command(label="Export LPC...", command=self._file_export_lpc)
-        menu_file.add_separator()
-        menu_file.add_command(label="Export Initial Synthesis WAV...", command=lambda: self._save_synthesis(False))
-        menu_file.add_command(label="Export Optimized Synthesis WAV...", command=lambda: self._save_synthesis(True))
-        menu_file.add_command(label="Export Optimization Report...", command=self._file_export_optimization_report)
-        menu_file.add_command(label="Export Optimized Parameters...", command=self._file_export_optimization_parameters)
         menu_file.add_separator()
         menu_file.add_command(label="Quit", command=self.quit)
         
@@ -276,7 +265,7 @@ class Gui(object):
         return settings_frame
 
     def _make_optimizer_settings(self):
-        optimizer = LabelFrame(self.root, text="Analysis-by-synthesis optimizer")
+        optimizer = LabelFrame(self.root, text="Analysis-by-synthesis")
         self.optimizer_widgets = []
         self.optimize_enabled = BooleanVar(value=False)
         self.optimize_passes = IntVar(value=2)
@@ -285,7 +274,7 @@ class Gui(object):
         self.optimize_loss_profile = StringVar(value="balanced")
 
         enable_checkbox = Checkbutton(
-            optimizer, text="Enable optimization", variable=self.optimize_enabled,
+            optimizer, text="Enable", variable=self.optimize_enabled,
             command=self._optimizer_changed,
         )
         enable_checkbox.grid(row=0, column=0, columnspan=2, padx=5, pady=3, sticky=W)
@@ -313,6 +302,7 @@ class Gui(object):
         self.initial_quantized_frames = None
         self.initial_synthesis = None
         self.optimized_synthesis = None
+        self.talkie_mitigation = None
         if self.filename is not None:
             self.play_button.configure(state=DISABLED)
             self.conversion_stale = True
@@ -424,6 +414,10 @@ class Gui(object):
             errors["outputFormat"] = "must be arduino, C, hex, or python"
         if values["tablesVariant"] not in ("tms5100", "tms5110a", "tms5200", "tms5220", "Talkie"):
             errors["tablesVariant"] = "unsupported table"
+        if not 0 <= values["talkieMitigationStrength"] <= 3:
+            errors["talkieMitigationStrength"] = "must be between 0 and 3"
+        if not 0 <= values["talkieGateThreshold"] <= 1:
+            errors["talkieGateThreshold"] = "must be between 0 and 1"
 
         if values["minimumPitchInHZ"] > 0:
             maximum_period = math.floor(8000 / values["minimumPitchInHZ"] + 1)
@@ -615,6 +609,7 @@ class Gui(object):
         self.initial_quantized_frames = None
         self.initial_synthesis = None
         self.optimized_synthesis = None
+        self.talkie_mitigation = None
 
         from pywizard.GuiConversion import run_conversion_process
 
@@ -689,8 +684,9 @@ class Gui(object):
             (
                 self.processor, chip_variant, self.optimization_result,
                 self.initial_quantized_frames, self.initial_synthesis,
-                self.optimized_synthesis,
+                self.optimized_synthesis, self.talkie_mitigation,
             ) = value
+            self.chip_variant = chip_variant
             self.codingTable = CodingTable(chip_variant)
             self.conversion_stale = False
             self._update_table(self.processor.frames)
@@ -698,7 +694,14 @@ class Gui(object):
             if not self.playback_active:
                 self.play_button.configure(state=NORMAL)
             if self.optimization_result is None:
-                self.statusbar['text'] = self._progress_bar(1, 1, "Conversion complete")
+                label = "Conversion complete"
+                if self.talkie_mitigation is not None:
+                    label += "; Talkie processing adjusted {} frame{} ({} gated)".format(
+                        self.talkie_mitigation.changed_frames,
+                        "" if self.talkie_mitigation.changed_frames == 1 else "s",
+                        self.talkie_mitigation.gated_frames,
+                    )
+                self.statusbar['text'] = self._progress_bar(1, 1, label)
             else:
                 result = self.optimization_result
                 self.statusbar['text'] = self._progress_bar(1, 1, (

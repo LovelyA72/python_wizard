@@ -7,7 +7,8 @@ class userSettings(object):
         "preEmphasis", "preEmphasisAlpha", "overridePitch", "pitchOffset",
         "minimumPitchInHZ", "maximumPitchInHZ", "frameRate",
         "pitchDetector", "subMultipleThreshold", "yinThreshold",
-        "lpcEstimator", "outputFormat", "rmsLimit", "tablesVariant"]
+        "lpcEstimator", "outputFormat", "rmsLimit", "tablesVariant",
+        "talkieMitigationStrength", "talkieGateThreshold"]
     pitchValue = 0
     unvoicedThreshold = 0.3
     windowWidth = 2
@@ -28,6 +29,8 @@ class userSettings(object):
     outputFormat = "arduino"
     rmsLimit = 14
     tablesVariant = "tms5100"
+    talkieMitigationStrength = 1.0
+    talkieGateThreshold = 0.0
 
     def import_from_argparse(self, raw):
         v = vars(raw)
