@@ -10,7 +10,7 @@ class userSettings(object):
         "lpcEstimator", "outputFormat", "rmsLimit", "tablesVariant",
         "talkieMitigationStrength", "talkieGateThreshold"]
     pitchValue = 0
-    unvoicedThreshold = 0.3
+    unvoicedThreshold = 0.7
     windowWidth = 2
     normalizeUnvoicedRMS = False
     normalizeVoicedRMS = False
@@ -22,15 +22,15 @@ class userSettings(object):
     maximumPitchInHZ = 500
     minimumPitchInHZ = 50
     frameRate = 25
-    pitchDetector = "autocorrelation"
+    pitchDetector = "yin"
     subMultipleThreshold = 0.9
-    yinThreshold = 0.1
+    yinThreshold = 0.9
     lpcEstimator = "autocorrelation"
     outputFormat = "arduino"
     rmsLimit = 14
     tablesVariant = "tms5100"
-    talkieMitigationStrength = 1.0
-    talkieGateThreshold = 0.0
+    talkieMitigationStrength = 1.5
+    talkieGateThreshold = 0.005
 
     def import_from_argparse(self, raw):
         v = vars(raw)
