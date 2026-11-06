@@ -29,6 +29,8 @@ class ConvertedProcessor:
 
     frames: list[QuantizedFrame] | list[object]
     codingTable: CodingTable
+    source_pcm: np.ndarray | None = None
+    frame_ms: float = 25.0
 
 
 def synthesize_frames(
@@ -109,6 +111,7 @@ def run_conversion_process(
                     strength=float(settings.talkieMitigationStrength),
                     gate_threshold=float(settings.talkieGateThreshold),
                     input_frame_samples=max(1, int(round(8 * settings.frameRate))),
+                    protect_voiced=settings.lpcEstimator == "qbp",
                 ),
             )
             analyzed.frames = talkie_mitigation.frames
@@ -138,6 +141,7 @@ def run_conversion_process(
                         input_frame_samples=max(
                             1, int(round(8 * settings.frameRate)),
                         ),
+                        protect_voiced=settings.lpcEstimator == "qbp",
                     ),
                 )
                 analyzed.frames = talkie_mitigation.frames
@@ -146,7 +150,9 @@ def run_conversion_process(
                     analyzed.frames,
                 )
 
-        processor = ConvertedProcessor(analyzed.frames, analyzed.codingTable)
+        processor = ConvertedProcessor(
+            analyzed.frames, analyzed.codingTable, original_pcm, float(settings.frameRate),
+        )
         event_queue.put(("complete", (
             processor, chip_variant, result, initial_frames,
             initial_audio, optimized_audio, talkie_mitigation,

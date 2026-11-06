@@ -1,4 +1,4 @@
-"""Fast conversion-time suppression of Talkie unvoiced noise bursts."""
+"""Source-relative Talkie burst suppression and fixed-point stabilization."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ class TalkieMitigationConfig:
     jump_floor: float = 0.25
     peak_floor: float = 0.25
     input_frame_samples: int = FRAME_SAMPLES
+    protect_voiced: bool = False
 
 
 @dataclass
@@ -266,14 +267,16 @@ def mitigate_talkie_frames(
     original_pcm: np.ndarray,
     config: TalkieMitigationConfig = TalkieMitigationConfig(),
 ) -> TalkieMitigationResult:
-    """Lower only disproportionate Talkie noise-frame energy.
+    """Limit disproportionate Talkie output relative to source PCM.
 
     The optional source gate emits rest frames. If Talkie's retained lattice
     state would sustain a fixed-point limit cycle through a gated run, its
     first frame becomes a zero-excitation transition that loads stable
     coefficients before the remaining rest frames. The burst guard otherwise
     chooses the highest lower legal energy index that brings a flagged
-    unvoiced frame within source-relative transient limits.
+    unvoiced frame within source-relative transient limits. ``protect_voiced``
+    also checks periodic frames and permits coefficient damping if reduced
+    gain cannot stop a retained-state burst. QBP enables this option.
     """
     started = time.perf_counter()
     output = list(frames)
@@ -315,8 +318,9 @@ def mitigate_talkie_frames(
         audio, next_state = _render_frame(frame, state)
         initial_risk, initial_metrics = _burst_risk(audio, reference, config)
 
-        # Only pitch-zero frames use Talkie's noise excitation.
-        if frame.pitch_index == 0 and not frame.is_silence and initial_risk > 1.0:
+        # Sequence encoders can also overdrive periodic excitation. Keep the
+        # historical noise-only guard unless the caller opts into both types.
+        if (frame.pitch_index == 0 or config.protect_voiced) and not frame.is_silence and initial_risk > 1.0:
             selected = frame
             selected_audio = audio
             selected_state = next_state
@@ -339,11 +343,36 @@ def mitigate_talkie_frames(
                 if candidate_risk <= 1.0:
                     break
 
+            # A strongly resonant lattice can keep buzzing even at minimum
+            # excitation. QBP opts into coefficient damping when gain alone
+            # cannot control it. Re-render from the same incoming state so
+            # every candidate includes the actual fixed-point history.
+            stabilized = False
+            if config.protect_voiced and selected_risk > 1.0 and not frame.repeat_flag:
+                for scale in (0.95, 0.85, 0.65, 0.4, 0.0):
+                    ks = tuple(
+                        (next(v for v, value in enumerate(K_TABLES[k]) if value >= 0)
+                         if scale == 0 else
+                         min(range(len(K_TABLES[k])),
+                             key=lambda v: abs(K_TABLES[k][v] - K_TABLES[k][old] * scale)))
+                        for k, old in enumerate(frame.k_indices)
+                    )
+                    candidate = replace(selected, k_indices=ks)
+                    candidate_audio, candidate_state = _render_frame(candidate, state)
+                    candidate_risk, candidate_metrics = _burst_risk(candidate_audio, reference, config)
+                    evaluations += 1
+                    if candidate_risk < selected_risk:
+                        selected, selected_audio, selected_state = candidate, candidate_audio, candidate_state
+                        selected_risk, selected_metrics = candidate_risk, candidate_metrics
+                        stabilized = True
+                    if candidate_risk <= 1.0:
+                        break
+
             if selected != frame:
                 output[index] = selected
                 audio, next_state = selected_audio, selected_state
                 changes.append({
-                    "kind": "burst",
+                    "kind": "stabilize" if stabilized else "burst",
                     "frame": index,
                     "old_energy_index": frame.energy_index,
                     "new_energy_index": selected.energy_index,
@@ -351,6 +380,8 @@ def mitigate_talkie_frames(
                     "new_risk": selected_risk,
                     "old_metrics": initial_metrics,
                     "new_metrics": selected_metrics,
+                    "old_k_indices": frame.k_indices,
+                    "new_k_indices": selected.k_indices,
                 })
 
         state = next_state

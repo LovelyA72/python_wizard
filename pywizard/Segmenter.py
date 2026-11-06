@@ -3,9 +3,10 @@ from pywizard.Buffer import Buffer
 import numpy as np
 
 class Segmenter(object):
-    def __init__(self, buf, windowWidth):
+    def __init__(self, buf, windowWidth, frame_samples=None):
         milliseconds = settings.frameRate
-        self.size = int(np.ceil(buf.sampleRate / 1e3 * milliseconds))
+        self.size = (int(np.ceil(buf.sampleRate / 1e3 * milliseconds))
+                     if frame_samples is None else frame_samples)
         self.buf = buf
         self.windowWidth = windowWidth
 

@@ -6,6 +6,8 @@ import sys
 import json
 from collections import Counter
 from lpcplayer.tables import tables
+from pywizard.LpcEstimator import LPC_ESTIMATOR_NAMES
+from pywizard.userSettings import settings
 
 '''
 Command line application for processing WAV files into LPC data
@@ -17,7 +19,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("-u", "--unvoicedThreshold",
     help="Unvoiced frame threshold",
     action="store",
-    default=0.3,
+    default=settings.unvoicedThreshold,
     type=float)
 parser.add_argument("-w", "--windowWidth",
     help="Window width in frames",
@@ -32,10 +34,12 @@ parser.add_argument("-V", "--normalizeVoicedRMS",
     action="store_true")
 parser.add_argument("-S", "--includeExplicitStopFrame",
     help="Create explicit stop frame (needed e.g. for Talkie)",
-    action="store_true")
+    action=argparse.BooleanOptionalAction,
+    default=settings.includeExplicitStopFrame)
 parser.add_argument("-p", "--preEmphasis",
     help="Pre emphasize sound to improve quality of translation",
-    action="store_true")
+    action=argparse.BooleanOptionalAction,
+    default=settings.preEmphasis)
 parser.add_argument("-a", "--preEmphasisAlpha",
     help="Emphasis coefficient",
     type=float,
@@ -56,15 +60,15 @@ parser.add_argument("-m", "--subMultipleThreshold",
 parser.add_argument("--pitchDetector",
     help="Pitch detection algorithm",
     choices=["autocorrelation", "yin"],
-    default="autocorrelation")
+    default=settings.pitchDetector)
 parser.add_argument("--yinThreshold",
     help="YIN trough threshold",
-    default=0.1,
+    default=settings.yinThreshold,
     type=float)
 parser.add_argument("--lpcEstimator",
-    help="LPC coefficient estimation algorithm",
-    choices=["autocorrelation", "burg"],
-    default="autocorrelation")
+    help="LPC analysis algorithm",
+    choices=LPC_ESTIMATOR_NAMES,
+    default=settings.lpcEstimator)
 parser.add_argument("-f", "--outputFormat",
     help="Output file format",
     choices=["arduino", "C", "hex", "python", "lpc"],
@@ -74,14 +78,14 @@ parser.add_argument("-o", "--output",
 parser.add_argument("-T", "--tablesVariant",
     help="Tables variant",
     choices=("tms5100", "tms5110a", "tms5200", "tms5220", "Talkie"),
-    default="tms5220")
+    default=settings.tablesVariant)
 parser.add_argument("--talkieMitigationStrength",
-    help="Talkie burst mitigation strength from 0 (off) to 3 (default: 1)",
-    default=1.0,
+    help="Talkie burst mitigation strength from 0 (off) to 3 (default: 2)",
+    default=settings.talkieMitigationStrength,
     type=float)
 parser.add_argument("--talkieGateThreshold",
-    help="Talkie three-frame RMS gate threshold from 0 (off) to 1 (default: 0)",
-    default=0.0,
+    help="Talkie three-frame RMS gate threshold from 0 (off) to 1 (default: 0.01)",
+    default=settings.talkieGateThreshold,
     type=float)
 parser.add_argument("--optimize", action="store_true",
     help="Optimize quantized frames using analysis-by-synthesis")
@@ -142,6 +146,7 @@ if args.tablesVariant.lower() == "talkie":
         strength=args.talkieMitigationStrength,
         gate_threshold=args.talkieGateThreshold,
         input_frame_samples=max(1, int(round(8 * args.frameRate))),
+        protect_voiced=args.lpcEstimator == "qbp",
     )
     talkie_mitigation = mitigate_talkie_frames(
         [QuantizedFrame.from_frame(frame) for frame in x.frames],

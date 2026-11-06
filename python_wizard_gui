@@ -20,11 +20,12 @@ from pywizard.Processor import Processor
 from pywizard.Buffer import Buffer
 from pywizard.CodingTable import CodingTable
 from pywizard.userSettings import settings
+from pywizard.LpcEstimator import LPC_ESTIMATOR_NAMES
 
 
 SELECTOR_CHOICES = {
     "pitchDetector": ("autocorrelation", "yin"),
-    "lpcEstimator": ("autocorrelation", "burg"),
+    "lpcEstimator": LPC_ESTIMATOR_NAMES,
     "outputFormat": ("arduino", "C", "hex", "python"),
     "tablesVariant": ("tms5100", "tms5110a", "tms5200", "tms5220", "Talkie"),
 }
@@ -63,6 +64,9 @@ class Gui(object):
 
         self.output_text = None
         self.processor = None
+        self.editor = None
+        self.frame_ms = float(settings.frameRate)
+        self.source_pcm = None
         self.chip_variant = settings.tablesVariant
         self.optimization_result = None
         self.initial_quantized_frames = None
@@ -110,6 +114,7 @@ class Gui(object):
             return
         self.filename = filedialog.askopenfilename(parent=self.master,filetypes=[('Waves',"*.wav")])
         if self.filename:
+            self._close_editor()
             self.processor = None
             self.optimization_result = None
             self.initial_quantized_frames = None
@@ -118,6 +123,7 @@ class Gui(object):
             self.talkie_mitigation = None
             self.frames = []
             self.play_button.configure(state=DISABLED)
+            self.edit_button.configure(state=DISABLED)
             self.convert_button.configure(state=NORMAL)
             self.conversion_stale = True
             self.statusbar['text'] = "WAV loaded; click Convert"
@@ -195,6 +201,7 @@ class Gui(object):
         menu_file.add_command(label="Open WAV", command=self._file_open)
         menu_file.add_command(label="Export WAV", command=self._file_export_wav)
         menu_file.add_command(label="Export LPC...", command=self._file_export_lpc)
+        menubar.add_command(label="Edit LPC", command=self._open_editor)
         menu_file.add_separator()
         menu_file.add_command(label="Quit", command=self.quit)
         
@@ -298,6 +305,7 @@ class Gui(object):
         return optimizer
 
     def _optimizer_changed(self, _event=None):
+        self._close_editor()
         self.optimization_result = None
         self.initial_quantized_frames = None
         self.initial_synthesis = None
@@ -305,11 +313,17 @@ class Gui(object):
         self.talkie_mitigation = None
         if self.filename is not None:
             self.play_button.configure(state=DISABLED)
+            self.edit_button.configure(state=DISABLED)
             self.conversion_stale = True
             self.statusbar['text'] = "Optimizer settings changed; click Convert"
 
     def _make_play_controls(self):
         controls = Frame(self.root)
+        self.edit_button = Button(
+            controls, text="Edit LPC", command=self._open_editor,
+            state=DISABLED, padx=16,
+        )
+        self.edit_button.pack(side=RIGHT, padx=8, pady=6)
         self.play_button = Button(
             controls,
             text="Play LPC",
@@ -370,7 +384,9 @@ class Gui(object):
             errors = settings.import_from_dict(new_cfg)
             if errors is None:
                 if self.filename is not None:
+                    self._close_editor()
                     self.play_button.configure(state=DISABLED)
+                    self.edit_button.configure(state=DISABLED)
                     self.conversion_stale = True
                     self.statusbar['text'] = "Settings changed; click Convert"
             else:
@@ -406,8 +422,8 @@ class Gui(object):
             errors["pitchDetector"] = "must be autocorrelation or yin"
         if not 0 < values["yinThreshold"] < 1:
             errors["yinThreshold"] = "must be between 0 and 1"
-        if values["lpcEstimator"] not in ("autocorrelation", "burg"):
-            errors["lpcEstimator"] = "must be autocorrelation or burg"
+        if values["lpcEstimator"] not in LPC_ESTIMATOR_NAMES:
+            errors["lpcEstimator"] = "must be " + ", ".join(LPC_ESTIMATOR_NAMES)
         if not 0 <= values["rmsLimit"] <= 14:
             errors["rmsLimit"] = "must be between 0 and 14"
         if values["outputFormat"] not in ("arduino", "C", "hex", "python"):
@@ -460,7 +476,7 @@ class Gui(object):
             
             for (p, col) in zip(parameters, range(len(parameters))):
                 v = IntVar()
-                e = Entry(table_data, width=5, textvariable=v)
+                e = Entry(table_data, width=5, textvariable=v, state="readonly")
                 table_vars[ (row, p) ] = v
                 e.grid(row=row+2, column=col+2)
             v = IntVar()
@@ -555,20 +571,6 @@ class Gui(object):
                 prev=self.table_vars[(line-1, 'size')].get()
             self.table_vars[(line, 'size')].set(prev+15)
             
-    def _readback_table(self, frames = None):
-        for (line, n, frame) in self._table_iterator(frames):
-            params = frame.parameters()
-            self.table_labels[line].set( str(n) )
-            changed = False
-            for p in params:
-                value = self.table_vars[ (line, p) ].get()
-                changed = changed or not ( int(params[p]) == int(value) )
-                if not (int(params[p]) == int(value)):
-                    print(p, value)
-                params[p] = int(value)
-            if changed:
-                self._update_output()
-
     @staticmethod
     def _progress_bar(current, total, label, width=24):
         """Format a compact ASCII progress bar for the status label."""
@@ -600,9 +602,11 @@ class Gui(object):
         if not self.check_change():
             return
 
+        self._close_editor()
         self.conversion_active = True
         self.conversion_stale = True
         self.play_button.configure(state=DISABLED)
+        self.edit_button.configure(state=DISABLED)
         self._set_conversion_controls(False)
         self.statusbar['text'] = self._progress_bar(0, 1, "Analyzing WAV…")
         self.optimization_result = None
@@ -687,10 +691,14 @@ class Gui(object):
                 self.optimized_synthesis, self.talkie_mitigation,
             ) = value
             self.chip_variant = chip_variant
+            self.frame_ms = self.processor.frame_ms
+            self.source_pcm = self.processor.source_pcm
             self.codingTable = CodingTable(chip_variant)
             self.conversion_stale = False
+            self.first_line = 0
             self._update_table(self.processor.frames)
             self._update_output()
+            self.edit_button.configure(state=NORMAL)
             if not self.playback_active:
                 self.play_button.configure(state=NORMAL)
             if self.optimization_result is None:
@@ -718,17 +726,53 @@ class Gui(object):
         self._handle_playback_events()
         self._handle_conversion_events()
         self._reap_conversion_processes()
-        if self.processor is not None and not self.conversion_active:
-            self._readback_table()
+        # The table is a readout; edits are committed by the track editor.
 
     def _update_output(self):
             result = BitPacker.pack(self.processor)
             self.output_text.delete(1.0, END)
             self.output_text.insert(END, result)
 
-    def play(self):
+    def _close_editor(self):
+        if self.editor is not None:
+            self.editor.close()
+
+    def _open_editor(self):
+        if self.processor is None or self.conversion_stale or self.conversion_active:
+            return
+        if self.editor is not None and self.editor.winfo_exists():
+            self.editor.lift()
+            self.editor.focus_set()
+            return
+        from pywizard.LpcEditor import LpcEditor
+        try:
+            self.editor = LpcEditor(
+                self.root, self.processor.frames, self.chip_variant,
+                self.source_pcm if self.source_pcm is not None else [], self.frame_ms,
+                self._editor_changed, self.play, self._editor_closed,
+            )
+        except ValueError as error:
+            messagebox.showerror("Cannot edit LPC", str(error))
+
+    def _editor_closed(self):
+        self.editor = None
+
+    def _editor_changed(self, frames):
+        self.processor.frames = frames
+        self.optimization_result = None
+        self.initial_quantized_frames = None
+        self.initial_synthesis = None
+        self.optimized_synthesis = None
+        self.talkie_mitigation = None
+        self._update_table(frames)
+        self._update_output()
+        self.statusbar['text'] = "LPC edited"
+
+    def play(self, frames=None, selection=None):
         if self.processor is None or self.conversion_stale:
             messagebox.showinfo("Nothing to play", "Open a WAV file and convert it first.")
+            return
+        if self.playback_active:
             return
         if pyaudio is None:
             messagebox.showerror(
@@ -737,18 +781,22 @@ class Gui(object):
             )
             return
 
-        encoded_frames = BitPacker.raw_stream(self.processor)
+        if frames is None:
+            encoded_frames = BitPacker.lpc_bytes(self.processor)
+        else:
+            from pywizard.GuiConversion import ConvertedProcessor
+            encoded_frames = BitPacker.lpc_bytes(ConvertedProcessor(frames, self.codingTable))
         self.statusbar['text'] = "Playing {} LPC bytes…".format(len(encoded_frames))
         self.playback_active = True
         self.play_button.configure(state=DISABLED)
-        chip_variant = settings.tablesVariant
+        chip_variant = self.chip_variant
         threading.Thread(
             target=self._play_audio,
-            args=(encoded_frames, chip_variant),
+            args=(encoded_frames, chip_variant, selection),
             daemon=True,
         ).start()
 
-    def _play_audio(self, encoded_frames, chip_variant):
+    def _play_audio(self, encoded_frames, chip_variant, selection=None):
         audio = None
         stream = None
         try:
@@ -759,6 +807,11 @@ class Gui(object):
             else:
                 decoder = player.LpcDecoder(tables.tables[chip_variant])
             samples = decoder.decode(encoded_frames)
+            if selection is not None:
+                # Decode the prefix too, retaining filter/excitation state and
+                # repeated coefficients at the beginning of the selected range.
+                first, last = selection
+                samples = samples[first * 200:(last + 1) * 200]
 
             audio = pyaudio.PyAudio()
             stream = audio.open(format=pyaudio.paUInt8, channels=1, rate=8000, output=True)
@@ -777,7 +830,9 @@ class Gui(object):
         while not self.playback_events.empty():
             event, value = self.playback_events.get()
             self.playback_active = False
-            self.play_button.configure(state=NORMAL)
+            self.play_button.configure(
+                state=NORMAL if self.processor is not None and not self.conversion_stale else DISABLED
+            )
             if event == "played":
                 self.statusbar['text'] = "Played {} LPC bytes".format(value)
             else:
@@ -790,7 +845,6 @@ class Gui(object):
 
 def main():
     settings.outputFormat = 'python'
-    settings.tablesVariant = 'tms5100'
     logging.basicConfig(level=logging.INFO)
     root = Tk()
     gui = Gui(root)

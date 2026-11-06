@@ -1,4 +1,4 @@
-"""Pluggable linear-predictive coding coefficient estimators."""
+"""Frame estimators and sequence-aware LPC analysis plugins."""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -6,6 +6,54 @@ from dataclasses import dataclass
 import numpy as np
 
 from pywizard.userSettings import settings
+
+
+LPC_ESTIMATOR_NAMES = ("autocorrelation", "burg", "qbp")
+
+
+@dataclass(frozen=True)
+class LpcAnalysisContext:
+    """Original and preemphasized PCM, target tables, and analysis controls.
+
+    Pitch values are periods in source samples. The caller inserts stop frames.
+    """
+
+    source: object
+    signal: object
+    coding_table: object
+    pitch_detector: object
+    frame_samples: int
+    window_width: float
+    minimum_pitch_hz: float
+    maximum_pitch_hz: float
+    override_pitch: float | None = None
+    pitch_offset: int = 0
+
+    def pitch_signal(self):
+        """Use the existing bandpass, padding inputs shorter than filtfilt."""
+        from pywizard.Buffer import Buffer
+        from pywizard.Filterer import Filterer
+
+        source = self.source
+        if len(source.samples) <= 33:
+            source = Buffer(
+                samples=np.pad(source.samples, (0, 34 - len(source.samples))),
+                sampleRate=source.sampleRate,
+            )
+        filtered = Filterer(
+            source, lowPassCutoffInHZ=self.minimum_pitch_hz,
+            highPassCutoffInHZ=self.maximum_pitch_hz, gain=1,
+        ).process()
+        return Buffer(samples=filtered.samples[:len(self.source.samples)],
+                      sampleRate=self.source.sampleRate)
+
+
+@dataclass
+class LpcAnalysis:
+    """Frames and selected pitch periods, excluding the stop frame."""
+
+    frames: list
+    pitch_periods: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -27,6 +75,36 @@ class LpcEstimator(ABC):
     @abstractmethod
     def estimate(self, buf):
         """Estimate reflection coefficients and residual energy for ``buf``."""
+
+    def analyze(self, context):
+        """Default sequence adapter for existing ``estimate(buf)`` plugins.
+
+        Override this method to own windowing, sequence decisions and
+        quantization, returning FrameData or QuantizedFrame objects.
+        """
+        from pywizard.FrameData import FrameData
+        from pywizard.HammingWindow import HammingWindow
+        from pywizard.Reflector import Reflector
+        from pywizard.Segmenter import Segmenter
+
+        segments = Segmenter(context.signal, context.window_width,
+                             frame_samples=context.frame_samples)
+        pitches = np.zeros(segments.numberOfSegments())
+        if context.override_pitch is not None:
+            pitches.fill(context.override_pitch)
+        else:
+            pitch_segments = Segmenter(context.pitch_signal(), 2,
+                                       frame_samples=context.frame_samples)
+            for buf, index in pitch_segments.eachSegment():
+                pitches[index] = context.pitch_detector.detect(buf)
+        frames = []
+        for buf, index in segments.eachSegment():
+            HammingWindow.processBuffer(buf)
+            reflector = Reflector.fromLpcEstimate(
+                context.coding_table, self.estimate(buf), buf.size,
+            )
+            frames.append(FrameData(reflector, pitches[index], repeat=False))
+        return LpcAnalysis(frames, pitches)
 
     def _samples(self, buf):
         samples = np.asarray(buf.samples[buf.start:buf.end], dtype=float)
@@ -153,9 +231,13 @@ class BurgLpcEstimator(LpcEstimator):
 
 def create_lpc_estimator_from_settings():
     """Create the LPC estimator selected in the application settings."""
+    # QBP reuses the solver above, so import it after defining that solver.
+    from pywizard.QbpLpcEstimator import QbpLpcEstimator
+
     estimator_types = {
         "autocorrelation": AutocorrelationLpcEstimator,
         "burg": BurgLpcEstimator,
+        "qbp": QbpLpcEstimator,
     }
     try:
         estimator_type = estimator_types[settings.lpcEstimator]

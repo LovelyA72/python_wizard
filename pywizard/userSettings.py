@@ -24,13 +24,13 @@ class userSettings(object):
     frameRate = 25
     pitchDetector = "yin"
     subMultipleThreshold = 0.9
-    yinThreshold = 0.9
-    lpcEstimator = "autocorrelation"
+    yinThreshold = 0.7
+    lpcEstimator = "qbp"
     outputFormat = "arduino"
     rmsLimit = 14
-    tablesVariant = "tms5100"
-    talkieMitigationStrength = 1.5
-    talkieGateThreshold = 0.005
+    tablesVariant = "Talkie"
+    talkieMitigationStrength = 2.0
+    talkieGateThreshold = 0.01
 
     def import_from_argparse(self, raw):
         v = vars(raw)

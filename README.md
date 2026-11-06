@@ -6,12 +6,13 @@
   uses the TMS5220 frame format and base quantization, while GUI playback and
   synthesized preview WAVs use the software synthesis algorithm ported from the
   Arduino Talkie library. Normal Talkie conversion also runs a fast,
-  source-aware burst guard over unvoiced frames. It lowers only disproportionate
-  noise-frame energy while preserving the LPC format, timing, voicing, and
-  coefficients; the full optimizer is not required. **Talkie mitigation
-  strength** defaults to `1.0`, accepts `0.0` through `3.0`, and can be set to
-  zero to disable the burst guard. **Talkie gate threshold** defaults to `0.0`
-  (disabled) and accepts `0.0` through `1.0`. Runs of at least three frames
+  source-aware burst guard. With QBP it checks voiced and unvoiced frames,
+  reducing gain and, when needed, damping coefficients to control fixed-point
+  buzzing. Other estimators use the existing noise-only guard. The LPC format,
+  timing, and voicing are preserved; the full optimizer is not required. **Talkie mitigation
+  strength** defaults to `2.0`, accepts `0.0` through `3.0`, and can be set to
+  zero to disable the burst guard. **Talkie gate threshold** defaults to `0.01`
+  and accepts `0.0` through `1.0` (zero disables it). Runs of at least three frames
   whose source RMS is below the threshold are encoded as silence. When a rest
   frame would retain a buzzing fixed-point filter state, the first gated frame
   is instead a zero-excitation transition that loads stable coefficients; the
@@ -56,10 +57,9 @@ python -m pip install .
 
 ### Pitch detector plugins
 
-`Processor` uses the existing autocorrelation detector by default. The native
-NumPy YIN detector can be selected from the command line with
-`--pitchDetector yin`; its trough threshold defaults to `0.1` and can be set
-with `--yinThreshold`. A different algorithm can also be supplied without
+`Processor` uses the native NumPy YIN detector by default, with trough
+threshold `0.7`. Select `--pitchDetector autocorrelation` for the earlier
+detector or set the YIN threshold with `--yinThreshold`. A different algorithm can also be supplied without
 changing the processing pipeline by implementing `PitchDetector.detect()` and
 passing the detector to `Processor`:
 
@@ -79,10 +79,48 @@ processor = Processor(audio_buffer, pitch_detector=MyPitchDetector())
 
 ### LPC estimator plugins
 
-Autocorrelation LPC remains the default. Native NumPy Burg LPC can be selected
+QBP with Talkie is the application default. Autocorrelation LPC remains
+available with `--lpcEstimator autocorrelation`. Native NumPy Burg LPC can be selected
 with `--lpcEstimator burg`. LPC estimators implement `LpcEstimator.estimate()`
 and return reflection coefficients plus residual energy, and custom estimators
 can be passed to `Processor` with its `lpc_estimator` argument.
+
+`--lpcEstimator qbp` selects a QBOX-informed sequence estimator. It uses
+separate voiced/unvoiced windows, center clipping before the selected pitch
+detector, temporal pitch/voicing repair, and gain estimated from quantized
+coefficients and the target's excitation. It supports the existing chip and
+Talkie targets; it does not load QBOX or its D6 format. This is a new
+implementation, not a bit-exact QBOX port, and audible quality should be
+compared on your recordings.
+
+CLI and GUI share the QBP/Talkie defaults: YIN threshold `0.7`, preemphasis
+enabled, Talkie mitigation strength `2.0`, and gate threshold `0.01`. For QBP,
+the burst guard checks voiced frames as well as noise frames. It first lowers
+gain, then damps quantized coefficients only when a retained filter state
+continues to exceed source-relative limits. Other estimators retain their
+noise-only guard. Use `--no-preEmphasis` to disable preemphasis from the CLI.
+
+```text
+python python_wizard --lpcEstimator qbp --pitchDetector yin -T Talkie -f lpc speech.wav
+```
+
+Existing `estimate(buf)` plugins still work. A sequence-aware plugin overrides
+`analyze(context)` and returns `LpcAnalysis(frames, pitch_periods)`. The context
+contains original PCM, preemphasized PCM, coding tables, pitch detector, frame
+size, window width, and pitch controls. Its frames can be `FrameData` or
+`QuantizedFrame` objects; `Processor` adds the optional stop frame. Input PCM
+is copied before analysis.
+
+After conversion, **Edit LPC** opens waveform, gain, pitch, and K1–K10 tracks.
+Select a frame range, draw parameter curves, or set a numeric value. Gain uses
+table indices 0–14, pitch uses Hz, and K values use normalized coefficients.
+K5–K10 are unavailable on unvoiced frames. Edits update the current conversion
+and its exports; each draw gesture or range edit supports Undo/Redo. Repeated
+frames are expanded when editing to preserve neighboring coefficients.
+**Play selection** decodes preceding frames before playing the range, retaining
+the synthesizer state. Playback requires PyAudio; editing and export do not.
+
+Run the regression checks with `python -m unittest discover -s tests`.
 
 Usage: 
 ```
@@ -91,7 +129,7 @@ Usage:
                         [-F FRAMERATE] [-m SUBMULTIPLETHRESHOLD]
                         [--pitchDetector {autocorrelation,yin}]
                         [--yinThreshold YINTHRESHOLD]
-                        [--lpcEstimator {autocorrelation,burg}]
+                        [--lpcEstimator {autocorrelation,burg,qbp}]
                         [-f {arduino,C,hex,python,lpc}] [-o OUTPUT]
                         filename
 
@@ -124,7 +162,7 @@ optional arguments:
                         Pitch detection algorithm
   --yinThreshold YINTHRESHOLD
                         YIN trough threshold
-  --lpcEstimator {autocorrelation,burg}
+  --lpcEstimator {autocorrelation,burg,qbp}
                         LPC coefficient estimation algorithm
   -f {arduino,C,hex,python,lpc}, --outputFormat {arduino,C,hex,python,lpc}
                         Output file format
