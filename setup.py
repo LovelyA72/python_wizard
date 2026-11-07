@@ -59,6 +59,8 @@ setup(
     install_requires=[
         'numpy>=2.1',
         'scipy>=1.14.1',
+        'jieba>=0.42.1',
+        'pypinyin>=0.55',
     ],
     python_requires = '>=3.13',
     scripts = ['python_wizard', 'python_wizard_gui']

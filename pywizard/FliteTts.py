@@ -41,8 +41,11 @@ class TtsOptions:
     speed: float = 1.0
     intonation: float = 1.0
     gain: float = 0.0
+    process_tone_numbers: bool = False
 
     def validate(self):
+        if not isinstance(self.process_tone_numbers, bool):
+            raise ValueError("Process tone numbers must be on or off.")
         if self.voice not in VOICES:
             raise ValueError("Choose an available voice.")
         for name, low, high in (
@@ -69,6 +72,7 @@ class AcousticParameters:
     alpha: float
     frame_shift: float
     frames: np.ndarray
+    tone_marks: np.ndarray | None = None
 
     @classmethod
     def from_json(cls, output):
@@ -83,7 +87,19 @@ class AcousticParameters:
                     or frames.shape[0] < 1 or frames.shape[1] < 3
                     or not np.all(np.isfinite(frames)) or np.any(frames[:, 0] < 0)):
                 raise ValueError("invalid acoustic parameters")
-            return cls(rate, alpha, shift, frames)
+            marks = data.get("tone_marks")
+            if marks is not None:
+                marks = np.asarray(marks, dtype=float)
+                if (marks.shape != (len(frames), 2) or not np.all(np.isfinite(marks))
+                        or np.any(marks != np.floor(marks)) or np.any(marks < 0)
+                        or np.any(marks[:, 1] > 5)
+                        or np.any((marks[:, 0] == 0) != (marks[:, 1] == 0))):
+                    raise ValueError("invalid tone alignment")
+                marks = marks.astype(np.int64)
+                for group in np.unique(marks[:, 0]):
+                    if group and len(np.unique(marks[marks[:, 0] == group, 1])) != 1:
+                        raise ValueError("inconsistent tone alignment")
+            return cls(rate, alpha, shift, frames, marks)
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"Invalid Flite parameters: {error}") from error
 
@@ -101,12 +117,14 @@ class FliteBackend:
             raise RuntimeError(MISSING_FLITE_MESSAGE)
         return executable
 
-    def parameters(self, text, cancel, voice=DEFAULT_VOICE, speed=1.0):
+    def parameters(self, text, cancel, voice=DEFAULT_VOICE, speed=1.0, process_tone_numbers=False):
         TtsOptions(voice=voice, speed=speed).validate()
         executable = self.resolve_executable()
         check_cancelled(cancel)
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
         command = [str(executable), "--voice", voice, "--speed", str(speed)]
+        if process_tone_numbers:
+            command.append("--process-tone-numbers")
         try:
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, **options)
@@ -133,7 +151,10 @@ class FliteBackend:
                 reason = errors.decode("utf-8", errors="replace").strip()
                 raise RuntimeError("Flite synthesis failed" + (": " + reason if reason else "."))
         check_cancelled(cancel)
-        return AcousticParameters.from_json(output)
+        parameters = AcousticParameters.from_json(output)
+        if process_tone_numbers and parameters.tone_marks is None:
+            raise ValueError("Rebuild the Flite helper with: python setup.py")
+        return parameters
 
 
 @dataclass
@@ -143,6 +164,31 @@ class TtsResult:
     processor: ConvertedProcessor
     audio: np.ndarray
     options: TtsOptions = TtsOptions()
+
+
+TONE_CONTOURS = {
+    1: ((0, 1), (4, 4)),
+    2: ((0, 1), (-2, 4)),
+    3: ((0, .5, 1), (-2, -5, 1)),
+    4: ((0, 1), (5, -4)),
+    5: ((0, 1), (0, -1)),
+}
+
+
+def _apply_tone_contours(pitches, marks, reference_pitch, options):
+    """Apply literal tone targets over each marked token's voiced span."""
+    for group in np.unique(marks[:, 0]):
+        if group == 0:
+            continue
+        indices = np.flatnonzero((marks[:, 0] == group) & (pitches > 0))
+        if not len(indices):
+            continue
+        tone = int(marks[indices[0], 1])
+        positions, semitones = TONE_CONTOURS[tone]
+        progress = (indices - indices[0]) / max(1, indices[-1] - indices[0])
+        contour = np.interp(progress, positions, semitones)
+        pitches[indices] = reference_pitch * 2 ** (
+            (options.pitch + options.intonation * contour) / 12)
 
 
 def _spectral_frames(parameters, cancel, options=TtsOptions()):
@@ -165,6 +211,12 @@ def _spectral_frames(parameters, cancel, options=TtsOptions()):
         center = np.median(np.log(frames[frames[:, 0] > 0, 0]))
         pitches[voiced] = np.exp(center + options.intonation * (log_pitch - center)
                                  + options.pitch * np.log(2) / 12)
+    if options.process_tone_numbers:
+        if parameters.tone_marks is None:
+            raise ValueError("Rebuild the Flite helper with: python setup.py")
+        if np.any(voiced):
+            reference_pitch = float(np.median(frames[frames[:, 0] > 0, 0]))
+            _apply_tone_contours(pitches, parameters.tone_marks[nearest], reference_pitch, options)
     frequency = np.linspace(0, 4000, 257)
     source_frequency = frequency / options.formant
     z = np.exp(-2j * np.pi * np.minimum(source_frequency, parameters.sample_rate / 2)
@@ -294,7 +346,7 @@ class TtsSession:
         self.text = None
         self.parameters = None
         self.results = {}
-        self.acoustic_options = (DEFAULT_VOICE, 1.0)
+        self.acoustic_options = (DEFAULT_VOICE, 1.0, False)
 
     def synthesize(self, text, engine, cancel=None, options=None):
         options = options or TtsOptions()
@@ -308,9 +360,16 @@ class TtsSession:
         if engine not in ENGINES.values():
             raise ValueError("Choose an available chip or engine.")
         check_cancelled(cancel)
-        acoustic_options = (options.voice, options.speed)
+        acoustic_options = (options.voice, options.speed, options.process_tone_numbers)
         if text != self.text or acoustic_options != self.acoustic_options:
-            parameters = self.backend.parameters(text, cancel, voice=options.voice, speed=options.speed)
+            backend_options = dict(voice=options.voice, speed=options.speed)
+            spoken_text = text
+            if options.process_tone_numbers:
+                from pywizard.MandarinText import mandarin_to_english
+                spoken_text = mandarin_to_english(text)
+                check_cancelled(cancel)
+                backend_options["process_tone_numbers"] = True
+            parameters = self.backend.parameters(spoken_text, cancel, **backend_options)
             self.text, self.parameters, self.results = text, parameters, {}
             self.acoustic_options = acoustic_options
         if engine not in self.results or self.results[engine].options != options:

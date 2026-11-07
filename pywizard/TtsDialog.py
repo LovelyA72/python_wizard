@@ -75,6 +75,13 @@ class TtsDialog(tk.Toplevel):
         scrollbar.pack(side="right", fill="y")
         self.text.pack(side="left", fill="both", expand=True)
         self.text.insert("1.0", text)
+        tone_controls = ttk.Frame(content)
+        tone_controls.pack(fill="x", pady=(0, 8))
+        self.process_tone_numbers = tk.BooleanVar(value=self.options.process_tone_numbers)
+        self.tone_checkbox = ttk.Checkbutton(
+            tone_controls, text="process tone numbers", variable=self.process_tone_numbers)
+        self.tone_checkbox.pack(side="left")
+        ttk.Label(tone_controls, text="你好 or knee2 how3").pack(side="left", padx=12)
         selectors = ttk.Frame(content)
         selectors.pack(fill="x", pady=(0, 8))
         ttk.Label(selectors, text="Voice").pack(side="left", padx=(0, 6))
@@ -122,7 +129,8 @@ class TtsDialog(tk.Toplevel):
         try:
             values = {name: self.option_vars[name].get() / multiplier
                       for name, _label, _low, _high, _step, multiplier in TTS_CONTROLS}
-            options = TtsOptions(voice=self.voice_labels[self.voice.get()], **values)
+            options = TtsOptions(voice=self.voice_labels[self.voice.get()],
+                                 process_tone_numbers=self.process_tone_numbers.get(), **values)
         except (tk.TclError, KeyError, ValueError) as error:
             raise ValueError("Choose a voice and enter numeric values for the adjustments.") from error
         options.validate()
@@ -131,6 +139,7 @@ class TtsDialog(tk.Toplevel):
     def _set_inputs_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
         self.text.configure(state=state)
+        self.tone_checkbox.configure(state=state)
         for selector in (self.voice_selector, self.engine_selector):
             selector.configure(state="readonly" if enabled else "disabled")
         for widget in self.option_widgets:

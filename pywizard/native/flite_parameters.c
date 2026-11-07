@@ -17,6 +17,33 @@ static int emitted = 0;
 static const VoiceEntry *selected_voice = &voices[0];
 static double speed = 1.0;
 static cst_utterance *active_utterance = NULL;
+static int process_tone_numbers = 0;
+
+static cst_utterance *tokenize_tones(cst_utterance *utterance)
+{
+    cst_item *token;
+    int group = 0;
+    default_tokenization(utterance);
+    for (token = utt_rel_head(utterance, "Token"); token; token = item_next(token)) {
+        const char *name = item_feat_string(token, "name");
+        size_t length = strlen(name), i;
+        char *spelling;
+        ++group;
+        if (length < 2 || name[length - 1] < '1' || name[length - 1] > '5') continue;
+        for (i = 0; i < length - 1; ++i) {
+            if (!((name[i] >= 'a' && name[i] <= 'z') ||
+                  (name[i] >= 'A' && name[i] <= 'Z'))) break;
+        }
+        if (i != length - 1) continue;
+        item_set_int(token, "tone", name[length - 1] - '0');
+        item_set_int(token, "tone_group", group);
+        spelling = cst_strdup(name);
+        spelling[length - 1] = '\0';
+        item_set_string(token, "name", spelling);
+        cst_free(spelling);
+    }
+    return utterance;
+}
 
 static int frame_is_voiced(const cst_item *frame)
 {
@@ -62,7 +89,21 @@ cst_wave *mlsa_resynthesis(const cst_track *params, const cst_track *strength,
         putchar(']');
         if (frame) frame = item_next(frame);
     }
-    puts("]}");
+    putchar(']');
+    if (process_tone_numbers) {
+        const char *token_path = "R:mcep_link.parent.R:segstate.parent.R:SylStructure.parent.parent.R:Token.parent";
+        frame = utt_rel_head(active_utterance, "mcep");
+        printf(",\"tone_marks\":[");
+        for (i = 0; i < params->num_frames; ++i) {
+            const cst_item *token = frame ? path_to_item(frame, token_path) : NULL;
+            if (i) putchar(',');
+            printf("[%d,%d]", token ? get_param_int(item_feats(token), "tone_group", 0) : 0,
+                   token ? get_param_int(item_feats(token), "tone", 0) : 0);
+            if (frame) frame = item_next(frame);
+        }
+        putchar(']');
+    }
+    puts("}");
     emitted = 1;
     empty = new_wave();
     empty->sample_rate = db->sample_rate;
@@ -95,6 +136,8 @@ int main(int argc, char **argv)
                 fputs("Speed must be between 0.5 and 2.0.\n", stderr);
                 return 2;
             }
+        } else if (strcmp(argv[argument], "--process-tone-numbers") == 0) {
+            process_tone_numbers = 1;
         } else {
             fprintf(stderr, "Unknown or incomplete option: %s\n", argv[argument]);
             return 2;
@@ -116,6 +159,8 @@ int main(int argc, char **argv)
     if (!length) { free(text); return 2; }
     flite_init();
     voice = selected_voice->register_voice(NULL);
+    if (process_tone_numbers)
+        flite_feat_set(voice->features, "tokenizer_func", uttfunc_val(&tokenize_tones));
     flite_feat_set_float(voice->features, "duration_stretch", 1.0 / speed);
     flite_feat_set(voice->features, "wave_synth_func", uttfunc_val(&synthesize_parameters));
     utterance = flite_synth_text(text, voice);

@@ -139,6 +139,21 @@ Flite's phoneme durations. Gain changes the encoded LPC energy, with output
 headroom reserved to limit clipping. Pitch and energy remain limited by the
 selected engine's tables. Settings are retained when reopening the dialog.
 
+Enable **process tone numbers** to enter Chinese text or English pronunciation
+approximations with Mandarin tone suffixes, such as `dah4 jah1 how3` or
+`knee2 how3`. Chinese text is split into words with jieba, read with pypinyin,
+and converted to numbered English spellings for SLT/RMS. English words and
+manual tone spellings are preserved, so `大家好，我的名字是 Talkie。` can be mixed
+with English names. This uses the libraries' word readings and basic tone
+sandhi. Names, ambiguous readings, and pronunciation may need manual spelling.
+Suffixes `1` through `5` select level, rising, dipping, falling, and a neutral
+pitch contour. The digits are removed before pronunciation. Each marked word
+is treated as one syllable, so write approximations separately. Unmarked words
+keep their English pitch. Pitch shifts the tone register, and intonation scales
+the contours. Manual tone numbers are literal and are not changed by sandhi.
+The output is an accented English-voice approximation of Mandarin. With the
+checkbox off, the input retains its normal English reading.
+
 Build the native backend once before using the dialog:
 
 ```text
