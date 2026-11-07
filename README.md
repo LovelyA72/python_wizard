@@ -1,37 +1,22 @@
 ### Updates to base python_wizard
 
-- Added "lpcplayer" package (based on talkie) to support Play feature in GUI. 
+Because python_wizard is just way too buggy and unusable.
 
-- Added support for other LPC coding tables and a **Talkie** conversion. Talkie
-  uses the TMS5220 frame format and base quantization, while GUI playback and
-  synthesized preview WAVs use the software synthesis algorithm ported from the
-  Arduino Talkie library. Normal Talkie conversion also runs a fast,
-  source-aware burst guard. With QBP it checks voiced and unvoiced frames,
-  reducing gain and, when needed, damping coefficients to control fixed-point
-  buzzing. Other estimators use the existing noise-only guard. The LPC format,
-  timing, and voicing are preserved. **Talkie mitigation
-  strength** defaults to `2.0`, accepts `0.0` through `3.0`, and can be set to
-  zero to disable the burst guard. **Talkie gate threshold** defaults to `0.01`
-  and accepts `0.0` through `1.0` (zero disables it). Runs of at least three frames
-  whose source RMS is below the threshold are encoded as silence. When a rest
-  frame would retain a buzzing fixed-point filter state, the first gated frame
-  is instead a zero-excitation transition that loads stable coefficients; the
-  remaining rest frames then synthesize as exact silence.
-  ```
-    -T {tms5100,tms5110a,tms5200,tms5220,Talkie}
-                          Tables variant
-  ```                        
+- Preview how your voice sound just like how it sounds on a real Arduino Talkie!
+
+- QBoxPro-like conversion without a Windows 3.11 computer!
+
+- Support for other LPC coding tables.
 
 - Support for python formatted output
   ```
     -f {arduino,C,hex,python}, --outputFormat {arduino,C,hex,python}
                           Output file format
   ```
-- Export raw, headerless `.lpc` byte streams from both the CLI and GUI. LPC
-  exports always include an explicit stop frame and are directly compatible
-  with Talkie and the FM720 Z80 file player.
 
-- Small fixes and enhancements in GUI
+- Export raw, headerless `.lpc` byte streams. Who knows what can you make with them. Stream voices directly from SD card? Your call!
+
+- An actuall GUI that allows you to intuitively edit and preview LPC data!
 
 
 
