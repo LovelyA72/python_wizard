@@ -8,7 +8,7 @@ version = "1.4.3"
 description = "Convert WAV files to LPC byte streams for TMS52xx speech chips"
 readme = "README.md"
 requires-python = ">=3.13"
-license = "MIT"
+license = {file = "LICENSE"}
 authors = [
   {name = "Peter Turczak and contributors"},
 ]
@@ -23,3 +23,6 @@ Homepage = "https://github.com/ptwz/python_wizard"
 [tool.setuptools]
 packages = ["pywizard", "lpcplayer"]
 script-files = ["python_wizard", "python_wizard_gui"]
+
+[tool.setuptools.package-data]
+pywizard = ["flite_voices.json", "native/*.c", "native/CMakeLists.txt", "bin/*"]

@@ -1,8 +1,10 @@
-"""Index-based frame representation used by synthesis and optimization."""
+"""Index-based frame representation used by synthesis and editing."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from lpcplayer.tables import tms_coeffs
 
 
 @dataclass(frozen=True)
@@ -39,14 +41,6 @@ class QuantizedFrame:
                 result[f"kParameterK{number}"] = value
         return result
 
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "energy_index": self.energy_index,
-            "repeat_flag": self.repeat_flag,
-            "pitch_index": self.pitch_index,
-            "k_indices": list(self.k_indices),
-        }
-
     @classmethod
     def from_frame(cls, frame: object) -> "QuantizedFrame":
         """Freeze an existing analyzed frame at its quantized table indices."""
@@ -60,3 +54,19 @@ class QuantizedFrame:
         ks = tuple(int(parameters[f"kParameterK{i}"]) for i in range(1, count + 1))
         return cls(energy, repeat, pitch, ks)
 
+
+def validate_frame(frame: QuantizedFrame, tables: tms_coeffs) -> bool:
+    """Reject frames that cannot be represented by the selected chip tables."""
+    if not 0 <= frame.energy_index < len(tables.energytable):
+        return False
+    if frame.is_silence or frame.is_stop:
+        return frame.pitch_index == 0 and not frame.k_indices
+    if not 0 <= frame.pitch_index < len(tables.pitchtable):
+        return False
+    if frame.repeat_flag:
+        return not frame.k_indices
+    count = 10 if frame.pitch_index else 4
+    return len(frame.k_indices) == count and all(
+        0 <= value < len(tables.ktable[index])
+        for index, value in enumerate(frame.k_indices)
+    )

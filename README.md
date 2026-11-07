@@ -9,7 +9,7 @@
   source-aware burst guard. With QBP it checks voiced and unvoiced frames,
   reducing gain and, when needed, damping coefficients to control fixed-point
   buzzing. Other estimators use the existing noise-only guard. The LPC format,
-  timing, and voicing are preserved; the full optimizer is not required. **Talkie mitigation
+  timing, and voicing are preserved. **Talkie mitigation
   strength** defaults to `2.0`, accepts `0.0` through `3.0`, and can be set to
   zero to disable the burst guard. **Talkie gate threshold** defaults to `0.01`
   and accepts `0.0` through `1.0` (zero disables it). Runs of at least three frames
@@ -122,6 +122,59 @@ the synthesizer state. Playback requires PyAudio; editing and export do not.
 
 Run the regression checks with `python -m unittest discover -s tests`.
 
+### Text to speech
+
+The GUI's **Text to speech…** dialog includes Flite's US English SLT (female)
+and RMS (male) Clustergen voices. Choose **TMS5100**, **TMS5110A**, **TMS5200**,
+**TMS5220**, or **Talkie** for the preview and applied
+LPC frames. **Play** synthesizes changed text and plays the chip preview.
+The same button stops synthesis or playback. **Apply** synthesizes if needed
+and replaces the current workspace, including any LPC edits. Closing the
+dialog without applying leaves the workspace intact.
+
+The dialog provides pitch (−12 to +12 semitones), formants (70–130%), speed
+(0.5–2×), intonation (0–200%), and gain (−24 to +12 dB). Formants and pitch
+are independent, and 0% intonation flattens the pitch contour. Speed changes
+Flite's phoneme durations. Gain changes the encoded LPC energy, with output
+headroom reserved to limit clipping. Pitch and energy remain limited by the
+selected engine's tables. Settings are retained when reopening the dialog.
+
+Build the native backend once before using the dialog:
+
+```text
+python setup.py
+```
+
+The build requires CMake, Git, and a C compiler. On Windows, MinGW-w64 GCC
+and `mingw32-make` on PATH are supported. It downloads a pinned Flite source
+revision and builds the helper with its voice into `pywizard/bin`. An existing
+checkout can be supplied with `python setup.py build_flite --source PATH`.
+Package builds also build and include the helper, voice registry, and Flite
+license. WAV conversion, LPC editing, playback, and export work without the
+helper. `PYWIZARD_FLITE_HELPER` can point
+to an externally built copy of this helper. A stock `flite` executable does
+not provide the required parameter output.
+
+The backend captures smoothed F0 and mel-cepstral parameters before Flite's
+waveform vocoder. It fits a ten-order LPC envelope over 0–4 kHz, quantizes
+25 ms frames for the selected engine, and derives gain from its excitation
+and filter response. Preemphasis controls DC amplification, and gain smoothing
+avoids frame-to-frame volume pumping.
+The helper preserves Flite's voicing decisions when an additional intonation
+model supplies pitch over unvoiced consonants, so those frames use chip noise
+excitation rather than a pitched chirp.
+There is no intermediate synthesized speech waveform to analyze. Preview PCM
+is generated only from the resulting LPC frames. Acoustic inference is cached
+for unchanged text, voice, and speed, including when switching preview engines
+or adjusting pitch, formants, intonation, and gain. PyAudio is
+required for playback, but Apply and export work without it.
+
+Voice definitions live in `pywizard/flite_voices.json`. Each entry supplies
+an `id`, a display `label`, and the Flite source `model` name, such as
+`cmu_us_rms`. To add another English Clustergen voice, add its entry and rebuild
+the helper against a Flite checkout containing that model. CMake generates
+the native registration table from the same registry used by the dialog.
+
 Usage: 
 ```
        python_wizard [-h] [-u UNVOICEDTHRESHOLD] [-w WINDOWWIDTH] [-U] [-V]
@@ -179,43 +232,6 @@ python_wizard -f lpc -o SPEECH.LPC speech.wav
 If `-o` is omitted for LPC output, the input name is reused with a `.lpc`
 extension. In the GUI, process a WAV file and select **File > Export LPC...**.
 
-### Analysis-by-synthesis optimization
-
-The command-line encoder can optionally improve quantized TMS52xx table
-indices with deterministic chip synthesis and bounded coordinate descent. The
-default path and bitstream writer are unchanged when `--optimize` is omitted.
-
-```text
-python_wizard --optimize --optimize-passes 2 --optimize-radius 1 \
-  --optimize-loss-profile balanced -f lpc -o speech.lpc speech.wav
-```
-
-For listening tests and regression analysis, export both synthesized versions
-and a detailed report:
-
-```text
-python_wizard --optimize --optimize-report optimization.json \
-  --optimize-initial-wav initial.wav \
-  --optimize-optimized-wav optimized.wav \
-  --optimize-parameters frames.json -f lpc -o speech.lpc speech.wav
-```
-
-The optimizer preserves silence, stop, repeat, and voiced/unvoiced structure.
-It searches energy, pitch, and individual K table neighbors in context. It is
-an offline quality pass, so it is slower than normal encoding; phase-sensitive
-waveform error is deliberately balanced with spectral and energy-envelope
-terms. Voicing changes and exhaustive/global search are not currently done.
-
-The GUI exposes the same optimizer in an **Analysis-by-synthesis**
-panel. Open a WAV, select the pass count, search radius, lookahead, and loss
-profile, then click **Convert**. Conversion is deliberately manual: opening a
-file or changing settings does not start work automatically. Analysis and
-optimization run in a spawned worker process with a separate Python interpreter,
-while an ASCII progress bar in the status line reports progress without
-freezing the interface. **Play LPC** becomes
-available after conversion completes. Initial and optimized synthesis WAVs,
-the JSON report, and indexed frame parameters can be saved from the **File**
-menu. Finite-choice encoder settings—including Vocoder/chip, Output
-language/format, Pitch estimator, and LPC estimator—are read-only dropdowns;
-numeric settings remain editable fields.
-
+GUI conversion runs in a separate process. Opening a WAV or changing settings
+does not start conversion automatically. Click **Convert** to process the WAV.
+Use **File > Export WAV** to save the current synthesis.

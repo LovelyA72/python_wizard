@@ -57,28 +57,14 @@ class TalkieMitigationResult:
 
 
 def _copy_state(state: TalkieState) -> TalkieState:
-    return TalkieState(
-        energy=state.energy,
-        period=state.period,
-        coefficients=state.coefficients.copy(),
-        lattice=state.lattice.copy(),
-        period_counter=state.period_counter,
-        noise_lfsr=state.noise_lfsr,
-    )
+    return state.copy()
 
 
 def _render_frame(
     frame: QuantizedFrame, state: TalkieState,
 ) -> tuple[np.ndarray, TalkieState]:
     """Render through the unchanged Talkie preview implementation."""
-    next_state = _copy_state(state)
-    TalkieSynthesizer._load_frame(frame, next_state)
-    unsigned = np.fromiter(
-        (TalkieSynthesizer._sample(next_state) for _ in range(FRAME_SAMPLES)),
-        dtype=np.float64,
-        count=FRAME_SAMPLES,
-    )
-    return (unsigned - 128.0) / 128.0, next_state
+    return TalkieSynthesizer().synthesize_frame(frame, state)
 
 
 def _target_frames(
@@ -131,7 +117,7 @@ def _burst_risk(
     return risk, measured
 
 
-def _silence_transition_frame() -> QuantizedFrame:
+def silence_transition_frame() -> QuantizedFrame:
     """Return a zero-excitation frame that flushes Talkie's lattice filter.
 
     A rest frame only clears Talkie's energy and retains its filter state.
@@ -237,7 +223,7 @@ def _stabilize_gated_silence(
 
         if np.any(last_audio):
             old = output[index]
-            transition = _silence_transition_frame()
+            transition = silence_transition_frame()
             output[index] = transition
             change = changes_by_frame.get(index)
             if change is None:

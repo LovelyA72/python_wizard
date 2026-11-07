@@ -133,7 +133,7 @@ class QbpLpcEstimator(AutocorrelationLpcEstimator):
             )
             quantized_k = np.array([k_tables[k][v] for k, v in enumerate(indices)])
             # Approximate residual RMS using the actual quantized filter and
-            # target excitation. The optional shared optimizer can refine it.
+            # target excitation.
             residual_rms = rms[index] * np.sqrt(np.prod(np.maximum(1e-9, 1 - quantized_k ** 2)))
             excitation_rms = 1.0
             if voiced:

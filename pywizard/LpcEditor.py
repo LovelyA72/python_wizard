@@ -89,8 +89,12 @@ class LpcEditor(tk.Toplevel):
         self.bind("<Left>", lambda e: self.move_cursor(-1, e))
         self.bind("<Right>", lambda e: self.move_cursor(1, e))
         self.bind("<space>", self._space)
-        self.after_idle(self.redraw)
+        self.initial_redraw = self.after_idle(self._initial_redraw)
         self._sync_value()
+
+    def _initial_redraw(self):
+        self.initial_redraw = None
+        self.redraw()
 
     def _coefficient_changed(self, _event):
         self.track.set(self.coefficient.get().lower())
@@ -98,6 +102,9 @@ class LpcEditor(tk.Toplevel):
         self.redraw()
 
     def close(self):
+        if self.initial_redraw is not None:
+            self.after_cancel(self.initial_redraw)
+            self.initial_redraw = None
         self._release(None)
         self.on_close()
         self.destroy()

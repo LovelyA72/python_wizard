@@ -103,7 +103,7 @@ class TmsSynthesizer:
             u[0] = max(-512, min(511, u[0]))
             for order in range(9, 0, -1):
                 state.lattice[order] = state.lattice[order - 1] + (
-                    (state.current[order + 1] * u[order]) >> 9
+                    (state.current[order + 1] * u[order - 1]) >> 9
                 )
             state.lattice[0] = u[0]
             output[sample_number] = u[0] / 512.0

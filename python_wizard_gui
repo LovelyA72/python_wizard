@@ -40,17 +40,6 @@ SETTING_LABELS = {
 }
 
 
-def optimize_processor_for_gui(
-    processor, original_pcm, chip_variant, passes, radius, lookahead, loss_profile,
-    input_frame_samples, progress_callback=None,
-):
-    """Compatibility wrapper around the process-safe GUI optimizer helper."""
-    from pywizard.GuiConversion import optimize_processor
-    return optimize_processor(
-        processor, original_pcm, chip_variant, passes, radius, lookahead,
-        loss_profile, input_frame_samples, progress_callback,
-    )
-
 class Gui(object):
     NUM_ROWS = 15
 
@@ -65,13 +54,12 @@ class Gui(object):
         self.output_text = None
         self.processor = None
         self.editor = None
+        self.tts_dialog = None
+        self.tts_text = ""
+        self.tts_options = None
         self.frame_ms = float(settings.frameRate)
         self.source_pcm = None
         self.chip_variant = settings.tablesVariant
-        self.optimization_result = None
-        self.initial_quantized_frames = None
-        self.initial_synthesis = None
-        self.optimized_synthesis = None
         self.talkie_mitigation = None
         self.playback_active = False
         self.playback_events = queue.SimpleQueue()
@@ -87,7 +75,6 @@ class Gui(object):
         root.protocol("WM_DELETE_WINDOW", self.quit)
         self.graph_frame = self._make_graphs()
         self.settings_frame = self._make_settings()
-        self.optimizer_frame = self._make_optimizer_settings()
         self.play_controls = self._make_play_controls()
         self.table_frame = self._make_table()
         self.menu = self._make_menus()
@@ -99,6 +86,8 @@ class Gui(object):
 
 
     def quit(self):
+        if self.tts_dialog is not None:
+            self.tts_dialog.close()
         if self.conversion_process is not None and self.conversion_process.is_alive():
             self.conversion_process.terminate()
             self.conversion_process.join(timeout=1)
@@ -116,10 +105,6 @@ class Gui(object):
         if self.filename:
             self._close_editor()
             self.processor = None
-            self.optimization_result = None
-            self.initial_quantized_frames = None
-            self.initial_synthesis = None
-            self.optimized_synthesis = None
             self.talkie_mitigation = None
             self.frames = []
             self.play_button.configure(state=DISABLED)
@@ -133,12 +118,12 @@ class Gui(object):
             messagebox.showinfo("Nothing to export", "Open a WAV file and convert it first.")
             return
 
-        basename = os.path.splitext(os.path.basename(self.filename))[0] + ".lpc"
+        basename = os.path.splitext(os.path.basename(self.filename or "speech"))[0] + ".lpc"
         filename = filedialog.asksaveasfilename(
             parent=self.master,
             title="Export LPC",
             defaultextension=".lpc",
-            initialdir=os.path.dirname(self.filename),
+            initialdir=os.path.dirname(self.filename or ""),
             initialfile=basename,
             filetypes=[("LPC byte stream", "*.lpc"), ("All files", "*.*")],
         )
@@ -162,12 +147,12 @@ class Gui(object):
             )
             return
 
-        basename = os.path.splitext(os.path.basename(self.filename))[0] + "_synthesis.wav"
+        basename = os.path.splitext(os.path.basename(self.filename or "speech"))[0] + "_synthesis.wav"
         filename = filedialog.asksaveasfilename(
             parent=self.master,
             title="Export WAV",
             defaultextension=".wav",
-            initialdir=os.path.dirname(self.filename),
+            initialdir=os.path.dirname(self.filename or ""),
             initialfile=basename,
             filetypes=[("Wave audio", "*.wav"), ("All files", "*.*")],
         )
@@ -175,8 +160,7 @@ class Gui(object):
             return
 
         try:
-            from pywizard.FrameOptimizer import write_synthesized_wav
-            from pywizard.GuiConversion import synthesize_frames
+            from pywizard.GuiConversion import synthesize_frames, write_synthesized_wav
 
             audio = synthesize_frames(
                 self.processor.frames,
@@ -199,6 +183,7 @@ class Gui(object):
         menubar.add_cascade(menu=menu_file, label="File")
 
         menu_file.add_command(label="Open WAV", command=self._file_open)
+        menu_file.add_command(label="Text to speech…", command=self._open_tts)
         menu_file.add_command(label="Export WAV", command=self._file_export_wav)
         menu_file.add_command(label="Export LPC...", command=self._file_export_lpc)
         menubar.add_command(label="Edit LPC", command=self._open_editor)
@@ -271,54 +256,10 @@ class Gui(object):
         settings_frame.pack()
         return settings_frame
 
-    def _make_optimizer_settings(self):
-        optimizer = LabelFrame(self.root, text="Analysis-by-synthesis")
-        self.optimizer_widgets = []
-        self.optimize_enabled = BooleanVar(value=False)
-        self.optimize_passes = IntVar(value=2)
-        self.optimize_radius = IntVar(value=1)
-        self.optimize_lookahead = IntVar(value=1)
-        self.optimize_loss_profile = StringVar(value="balanced")
-
-        enable_checkbox = Checkbutton(
-            optimizer, text="Enable", variable=self.optimize_enabled,
-            command=self._optimizer_changed,
-        )
-        enable_checkbox.grid(row=0, column=0, columnspan=2, padx=5, pady=3, sticky=W)
-        self.optimizer_widgets.append(enable_checkbox)
-        controls = (
-            ("Passes", self.optimize_passes, (1, 2, 3, 4, 5)),
-            ("Search radius", self.optimize_radius, (1, 2)),
-            ("Lookahead", self.optimize_lookahead, (0, 1, 2, 3)),
-            ("Loss profile", self.optimize_loss_profile, ("balanced", "spectral", "waveform")),
-        )
-        for column, (label, variable, values) in enumerate(controls):
-            Label(optimizer, text=label).grid(row=1, column=column * 2, padx=(5, 2), sticky=E)
-            selector = Combobox(
-                optimizer, textvariable=variable, values=values,
-                state="readonly", width=10,
-            )
-            selector.grid(row=1, column=column * 2 + 1, padx=(2, 7), pady=4, sticky=W)
-            selector.bind("<<ComboboxSelected>>", self._optimizer_changed)
-            self.optimizer_widgets.append(selector)
-        optimizer.pack(fill=X, padx=4, pady=3)
-        return optimizer
-
-    def _optimizer_changed(self, _event=None):
-        self._close_editor()
-        self.optimization_result = None
-        self.initial_quantized_frames = None
-        self.initial_synthesis = None
-        self.optimized_synthesis = None
-        self.talkie_mitigation = None
-        if self.filename is not None:
-            self.play_button.configure(state=DISABLED)
-            self.edit_button.configure(state=DISABLED)
-            self.conversion_stale = True
-            self.statusbar['text'] = "Optimizer settings changed; click Convert"
-
     def _make_play_controls(self):
         controls = Frame(self.root)
+        self.tts_button = Button(controls, text="Text to speech…", command=self._open_tts, padx=16)
+        self.tts_button.pack(side=LEFT, padx=8, pady=6)
         self.edit_button = Button(
             controls, text="Edit LPC", command=self._open_editor,
             state=DISABLED, padx=16,
@@ -582,13 +523,9 @@ class Gui(object):
 
     def _set_conversion_controls(self, enabled):
         state = NORMAL if enabled else DISABLED
+        self.tts_button.configure(state=state)
         for key, widget in self.settings_widgets.items():
             widget.configure(state="readonly" if enabled and key in SELECTOR_CHOICES else state)
-        for widget in self.optimizer_widgets:
-            if enabled and isinstance(widget, Combobox):
-                widget.configure(state="readonly")
-            else:
-                widget.configure(state=state)
         self.convert_button.configure(
             state=NORMAL if enabled and self.filename is not None else DISABLED
         )
@@ -609,28 +546,16 @@ class Gui(object):
         self.edit_button.configure(state=DISABLED)
         self._set_conversion_controls(False)
         self.statusbar['text'] = self._progress_bar(0, 1, "Analyzing WAV…")
-        self.optimization_result = None
-        self.initial_quantized_frames = None
-        self.initial_synthesis = None
-        self.optimized_synthesis = None
         self.talkie_mitigation = None
 
         from pywizard.GuiConversion import run_conversion_process
 
-        optimizer_values = {
-            "enabled": bool(self.optimize_enabled.get()),
-            "passes": int(self.optimize_passes.get()),
-            "radius": int(self.optimize_radius.get()),
-            "lookahead": int(self.optimize_lookahead.get()),
-            "loss_profile": self.optimize_loss_profile.get(),
-            "input_frame_samples": max(1, int(round(8 * settings.frameRate))),
-        }
         self.conversion_events = self.mp_context.Queue()
         self.conversion_process = self.mp_context.Process(
             target=run_conversion_process,
             args=(
                 self.conversion_events, self.filename,
-                dict(settings.export_to_odict()), optimizer_values,
+                dict(settings.export_to_odict()),
             ),
             daemon=True,
         )
@@ -666,13 +591,6 @@ class Gui(object):
                 event, value = self.conversion_events.get_nowait()
             except queue.Empty:
                 break
-            if event == "progress":
-                current, total = value
-                self.statusbar['text'] = self._progress_bar(
-                    current, total, "Optimizing frames…"
-                )
-                continue
-
             self.conversion_active = False
             self._set_conversion_controls(True)
             self._finish_conversion_process()
@@ -685,11 +603,7 @@ class Gui(object):
                 messagebox.showerror("Conversion failed", value)
                 return
 
-            (
-                self.processor, chip_variant, self.optimization_result,
-                self.initial_quantized_frames, self.initial_synthesis,
-                self.optimized_synthesis, self.talkie_mitigation,
-            ) = value
+            self.processor, chip_variant, self.talkie_mitigation = value
             self.chip_variant = chip_variant
             self.frame_ms = self.processor.frame_ms
             self.source_pcm = self.processor.source_pcm
@@ -701,24 +615,14 @@ class Gui(object):
             self.edit_button.configure(state=NORMAL)
             if not self.playback_active:
                 self.play_button.configure(state=NORMAL)
-            if self.optimization_result is None:
-                label = "Conversion complete"
-                if self.talkie_mitigation is not None:
-                    label += "; Talkie processing adjusted {} frame{} ({} gated)".format(
-                        self.talkie_mitigation.changed_frames,
-                        "" if self.talkie_mitigation.changed_frames == 1 else "s",
-                        self.talkie_mitigation.gated_frames,
-                    )
-                self.statusbar['text'] = self._progress_bar(1, 1, label)
-            else:
-                result = self.optimization_result
-                self.statusbar['text'] = self._progress_bar(1, 1, (
-                    "{} of {} changed; loss {:.4f} → {:.4f} ({:.2f}%), {:.2f}s"
-                ).format(
-                    result.changed_frames, len(result.frames), result.initial_loss,
-                    result.optimized_loss, result.improvement_percent,
-                    result.elapsed_seconds,
-                ))
+            label = "Conversion complete"
+            if self.talkie_mitigation is not None:
+                label += "; Talkie processing adjusted {} frame{} ({} gated)".format(
+                    self.talkie_mitigation.changed_frames,
+                    "" if self.talkie_mitigation.changed_frames == 1 else "s",
+                    self.talkie_mitigation.gated_frames,
+                )
+            self.statusbar['text'] = self._progress_bar(1, 1, label)
             return
 
     def _repeatedly(self):
@@ -736,6 +640,59 @@ class Gui(object):
     def _close_editor(self):
         if self.editor is not None:
             self.editor.close()
+
+    def _open_tts(self):
+        if self.conversion_active or self.playback_active:
+            messagebox.showinfo("Text to speech", "Wait for conversion or playback to finish.", parent=self.root)
+            return
+        if self.tts_dialog is not None and self.tts_dialog.winfo_exists():
+            self.tts_dialog.lift()
+            self.tts_dialog.focus_set()
+            return
+        from pywizard.FliteTts import FliteBackend
+        try:
+            FliteBackend().resolve_executable()
+        except RuntimeError as error:
+            messagebox.showerror("Text to speech", str(error), parent=self.root)
+            return
+        from pywizard.TtsDialog import TtsDialog
+        self.tts_dialog = TtsDialog(
+            self.root, self.settings_vars["tablesVariant"].get(), self.tts_text,
+            self._apply_tts, self._tts_closed,
+            options=self.tts_options,
+        )
+
+    def _tts_closed(self, text):
+        self.tts_text = text
+        self.tts_options = self.tts_dialog.options
+        self.tts_dialog = None
+
+    def _apply_tts(self, result):
+        from pywizard.GuiConversion import ConvertedProcessor
+        if self.conversion_active:
+            raise RuntimeError("Wait for the current conversion to finish.")
+        self._close_editor()
+        self.filename = None
+        self.tts_text = result.text
+        self.tts_options = result.options
+        self.processor = ConvertedProcessor(list(result.processor.frames), CodingTable(result.engine), None, 25.0)
+        self.chip_variant = result.engine
+        self.codingTable = self.processor.codingTable
+        self.frame_ms = 25.0
+        self.source_pcm = None
+        self.talkie_mitigation = None
+        self.settings_vars["tablesVariant"].set(result.engine)
+        settings.tablesVariant = result.engine
+        self.conversion_stale = False
+        self.first_line = 0
+        for variable in self.table_vars.values():
+            variable.set(0)
+        self._update_table(self.processor.frames)
+        self._update_output()
+        self.convert_button.configure(state=DISABLED)
+        self.edit_button.configure(state=NORMAL)
+        self.play_button.configure(state=NORMAL)
+        self.statusbar['text'] = "Text to speech applied"
 
     def _open_editor(self):
         if self.processor is None or self.conversion_stale or self.conversion_active:
@@ -759,10 +716,6 @@ class Gui(object):
 
     def _editor_changed(self, frames):
         self.processor.frames = frames
-        self.optimization_result = None
-        self.initial_quantized_frames = None
-        self.initial_synthesis = None
-        self.optimized_synthesis = None
         self.talkie_mitigation = None
         self._update_table(frames)
         self._update_output()
@@ -800,13 +753,12 @@ class Gui(object):
         audio = None
         stream = None
         try:
-            from lpcplayer import player, tables
-            if chip_variant.lower() == "talkie":
-                from pywizard.TalkieSynthesizer import TalkieSynthesizer
-                decoder = TalkieSynthesizer()
-            else:
-                decoder = player.LpcDecoder(tables.tables[chip_variant])
-            samples = decoder.decode(encoded_frames)
+            import numpy as np
+            from pywizard.GuiConversion import synthesize_frames
+            from pywizard.TalkieSynthesizer import TalkieSynthesizer
+            frames = TalkieSynthesizer.decode_frames(encoded_frames, CodingTable(chip_variant))
+            samples = synthesize_frames(frames, chip_variant)
+            samples = np.clip(np.rint(samples * 128 + 128), 0, 255).astype(np.uint8).tolist()
             if selection is not None:
                 # Decode the prefix too, retaining filter/excitation state and
                 # repeated coefficients at the beginning of the selected range.

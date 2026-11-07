@@ -1,0 +1,4 @@
+[
+  {"id": "slt", "label": "SLT (female, US English)", "model": "cmu_us_slt"},
+  {"id": "rms", "label": "RMS (male, US English)", "model": "cmu_us_rms"}
+]

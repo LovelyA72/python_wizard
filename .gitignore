@@ -33,4 +33,6 @@ Desktop.ini
 *.tmp
 *.temp
 artifacts
+AGENTS.md
 scratch/
+pywizard/bin/python-wizard-flite*

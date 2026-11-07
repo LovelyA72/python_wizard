@@ -62,6 +62,10 @@ class TalkieState:
     period_counter: int = 0
     noise_lfsr: int = 1
 
+    def copy(self):
+        return TalkieState(self.energy, self.period, self.coefficients.copy(),
+                           self.lattice.copy(), self.period_counter, self.noise_lfsr)
+
 
 class _BitReader:
     def __init__(self, data: bytes | bytearray | Iterable[int]):
@@ -84,20 +88,21 @@ class TalkieSynthesizer:
     """Synthesize TMS5220-format indexed frames as Arduino Talkie does."""
 
     @staticmethod
-    def decode_frames(data: bytes | bytearray | Iterable[int]) -> list[QuantizedFrame]:
-        """Decode the LSB-first Talkie/TMS5220 byte stream into indexed frames."""
+    def decode_frames(data: bytes | bytearray | Iterable[int], coding_table=None) -> list[QuantizedFrame]:
+        """Decode LSB-first LPC frames, defaulting to the Talkie/TMS5220 format."""
+        bits = coding_table.bits if coding_table is not None else (4, 1, 6, 5, 5, 4, 4, 4, 4, 4, 3, 3, 3)
         reader = _BitReader(data)
         frames: list[QuantizedFrame] = []
         try:
             while True:
-                energy = reader.read(4)
+                energy = reader.read(bits[0])
                 if energy in (0, 15):
                     frame = QuantizedFrame(energy)
                 else:
-                    repeat = bool(reader.read(1))
-                    pitch = reader.read(6)
+                    repeat = bool(reader.read(bits[1]))
+                    pitch = reader.read(bits[2])
                     count = 0 if repeat else (10 if pitch else 4)
-                    widths = (5, 5, 4, 4, 4, 4, 4, 3, 3, 3)
+                    widths = bits[3:]
                     indices = tuple(reader.read(widths[i]) for i in range(count))
                     frame = QuantizedFrame(energy, repeat, pitch, indices)
                 frames.append(frame)
@@ -165,6 +170,14 @@ class TalkieSynthesizer:
             )
         state.lattice[0] = u[0]
         return ((u[0] >> 2) + 0x80) & 0xFF
+
+    def synthesize_frame(self, frame, state=None):
+        """Render a frame from copied state, matching the TMS synthesizer API."""
+        state = state.copy() if state is not None else TalkieState()
+        self._load_frame(frame, state)
+        samples = np.fromiter((self._sample(state) for _ in range(FRAME_SAMPLES)),
+                              dtype=np.float64, count=FRAME_SAMPLES)
+        return (samples - 128.0) / 128.0, state
 
     def synthesize_u8(self, frames: Iterable[QuantizedFrame]) -> np.ndarray:
         """Return Talkie's unsigned 8-bit PWM samples."""
